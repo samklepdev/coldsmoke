@@ -2800,7 +2800,21 @@ export async function markOrderPaid(
     if (!order) return null;
 
     await commitStock(tx, order.id);
-    if (order.discountCodeId) await redeemDiscount(tx, order.discountCodeId);
+
+    if (order.discountCodeId) {
+      const recorded = await redeemDiscount(tx, order.discountCodeId);
+      if (!recorded) {
+        // The cap was exhausted by a concurrent order between checkout and
+        // payment. The customer has already been charged the discounted
+        // total, so we honour it and log the discrepancy rather than
+        // throwing — a throw here would fail the webhook and have Stripe
+        // retry a payment that already succeeded.
+        console.warn("[orders] discount applied but not recorded", {
+          orderId: order.id,
+          discountCodeId: order.discountCodeId,
+        });
+      }
+    }
 
     return order;
   });

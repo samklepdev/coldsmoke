@@ -34,3 +34,14 @@ Task 3: complete (commits dc0eb1e..837b814, approved on re-review)
     as insufficient — it shares the line objects.
   - Plan file patched to match so a re-run does not reproduce the bug.
   - 26 tests passing (23 original, unweakened + 3 new).
+Task 4: complete (commits 77e072a..57783f1, review clean after 1 fix wave)
+  - Controller commit ea408d3: committed drizzle/meta/_journal.json +
+    0001_snapshot.json, which the Task 2 index fix had left untracked. Without
+    the journal entry a fresh DB would silently skip migration 0001.
+  - Important fixed: redeemDiscount returned void, so a lost race on the
+    redemption cap left an order discounted but unrecorded, AFTER the card was
+    charged. Now returns boolean; caller logs. Deliberately does not throw —
+    throwing in the webhook would make Stripe retry a successful payment.
+  - Minors fixed: inclusive boundary tests (startsAt/endsAt == now), fallback
+    message test, DB CHECK constraint enforcing lowercase codes (migration 0002).
+  - 16 tests passing. Plan + task-9-brief patched for the new boolean caller.
