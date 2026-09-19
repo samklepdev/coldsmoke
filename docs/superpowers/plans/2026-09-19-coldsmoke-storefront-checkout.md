@@ -1398,6 +1398,7 @@ git commit -m "feat: discount code validation and redemption"
   - `type CatalogProduct = Product & { images: ProductImage[]; available: number }`
   - `getActiveProducts(): Promise<CatalogProduct[]>`
   - `getProductBySlug(slug: string): Promise<CatalogProduct | null>`
+  - `getCatalogProductById(id: string): Promise<CatalogProduct | null>`
   - `getProductsByIds(ids: string[]): Promise<Product[]>`
 
 - [ ] **Step 1: Implement the catalog module**
@@ -1478,6 +1479,34 @@ export async function getProductBySlug(
     available: Number(row.available ?? 0),
     images,
   };
+}
+
+/**
+ * Availability-aware lookup by id. Used by checkout to report exactly how many
+ * of a product remain when a reservation fails.
+ */
+export async function getCatalogProductById(
+  id: string,
+): Promise<CatalogProduct | null> {
+  const [row] = await db
+    .select({
+      product: products,
+      available: sql<number>`GREATEST(${inventory.onHand} - ${inventory.reserved}, 0)`,
+    })
+    .from(products)
+    .leftJoin(inventory, eq(inventory.productId, products.id))
+    .where(eq(products.id, id))
+    .limit(1);
+
+  if (!row) return null;
+
+  const images = await db
+    .select()
+    .from(productImages)
+    .where(eq(productImages.productId, row.product.id))
+    .orderBy(asc(productImages.sortOrder));
+
+  return { ...row.product, available: Number(row.available ?? 0), images };
 }
 
 /** Used to resolve live prices for cart lines. */
@@ -4520,7 +4549,8 @@ Create `src/app/(store)/checkout/actions.ts`:
 
 import { z } from "zod";
 import { cookies } from "next/headers";
-import { getOrCreateCartId, getCartLines } from "@/lib/cart";
+import { getOrCreateCartId, getCartLines, setQuantity } from "@/lib/cart";
+import { getCatalogProductById } from "@/lib/catalog";
 import { createPendingOrder } from "@/lib/orders";
 import { OutOfStockError } from "@/lib/inventory";
 import { PENDING_ORDER_COOKIE } from "@/lib/cookies";
@@ -4607,9 +4637,26 @@ export async function startCheckoutAction(
     };
   } catch (error) {
     if (error instanceof OutOfStockError) {
+      // The spec requires a specific message naming the product, and the cart
+      // corrected to what is actually available — a generic "something sold
+      // out" leaves the customer to guess which line to fix.
+      const product = await getCatalogProductById(error.productId);
+
+      if (!product) {
+        return {
+          status: "error",
+          error: "An item in your cart is no longer available. Check your cart.",
+        };
+      }
+
+      await setQuantity(cartId, product.id, product.available);
+
       return {
         status: "error",
-        error: "One of the items in your cart just sold out. Check your cart.",
+        error:
+          product.available === 0
+            ? `${product.name} just sold out. We removed it from your cart.`
+            : `Only ${product.available} left of ${product.name}. We updated your cart.`,
       };
     }
     // Stripe Tax failures land here. Blocking is deliberate: charging a guessed
