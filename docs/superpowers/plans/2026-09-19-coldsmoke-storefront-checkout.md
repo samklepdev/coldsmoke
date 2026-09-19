@@ -2341,7 +2341,7 @@ import type {
 
 // This is the ONLY file permitted to import the stripe package.
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2025-10-29.clover",
+  apiVersion: "2026-08-26.dahlia", // must match the installed SDK's LatestApiVersion
 });
 
 export class StripePayments implements PaymentsAdapter {
@@ -3361,7 +3361,8 @@ Create `src/components/ui/Button.module.css`:
 Create `src/components/ui/Button.tsx`:
 
 ```tsx
-import type { ButtonHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
+import Link, { type LinkProps } from "next/link";
 import styles from "./Button.module.css";
 
 type Props = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -3369,13 +3370,12 @@ type Props = ButtonHTMLAttributes<HTMLButtonElement> & {
   block?: boolean;
 };
 
-export function Button({
-  variant = "outline",
-  block = false,
-  className,
-  ...rest
-}: Props) {
-  const classes = [
+function buttonClasses(
+  variant: "primary" | "outline" | "quiet",
+  block: boolean,
+  className?: string,
+) {
+  return [
     styles.base,
     variant === "primary" && styles.primary,
     variant === "quiet" && styles.quiet,
@@ -3384,8 +3384,42 @@ export function Button({
   ]
     .filter(Boolean)
     .join(" ");
+}
 
-  return <button className={classes} {...rest} />;
+export function Button({
+  variant = "outline",
+  block = false,
+  className,
+  ...rest
+}: Props) {
+  return <button className={buttonClasses(variant, block, className)} {...rest} />;
+}
+
+/**
+ * A link that looks like a button.
+ *
+ * Use this instead of wrapping <Button> in <Link>. Nesting a <button> inside
+ * an <a> is invalid HTML: it gives keyboard users two tab stops for one
+ * control and leaves screen readers to guess which element to announce.
+ */
+export function ButtonLink({
+  href,
+  variant = "outline",
+  block = false,
+  className,
+  children,
+  ...rest
+}: Omit<LinkProps, "className"> & {
+  variant?: "primary" | "outline" | "quiet";
+  block?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Link href={href} className={buttonClasses(variant, block, className)} {...rest}>
+      {children}
+    </Link>
+  );
 }
 ```
 
@@ -3761,9 +3795,8 @@ Create `src/app/(store)/page.module.css`:
 Create `src/app/(store)/page.tsx`:
 
 ```tsx
-import Link from "next/link";
 import { Wordmark } from "@/components/ui/Wordmark";
-import { Button } from "@/components/ui/Button";
+import { ButtonLink } from "@/components/ui/Button";
 import styles from "./page.module.css";
 
 const NOTES = [
@@ -3784,12 +3817,10 @@ export default function HomePage() {
             smoke. Cold up top. Smoke underneath.
           </p>
           <div className={styles.cta}>
-            <Link href="/shop">
-              <Button variant="primary">Shop</Button>
-            </Link>
-            <Link href="/the-scent">
-              <Button>The scent</Button>
-            </Link>
+            <ButtonLink href="/shop" variant="primary">
+              Shop
+            </ButtonLink>
+            <ButtonLink href="/the-scent">The scent</ButtonLink>
           </div>
         </div>
       </section>
@@ -4329,6 +4360,10 @@ Create `src/app/(store)/cart/page.module.css`:
 .empty {
   color: var(--text-dim);
 }
+
+.checkoutCta {
+  margin-top: var(--space-3);
+}
 ```
 
 Create `src/app/(store)/cart/page.tsx`:
@@ -4339,7 +4374,7 @@ import type { Metadata } from "next";
 import { getCartId, getCartLines } from "@/lib/cart";
 import { quote, FREE_SHIPPING_THRESHOLD_CENTS } from "@/lib/pricing/quote";
 import { formatCents } from "@/lib/money";
-import { Button } from "@/components/ui/Button";
+import { Button, ButtonLink } from "@/components/ui/Button";
 import { setQuantityAction, getActiveDiscount } from "../actions";
 import { DiscountForm } from "./DiscountForm";
 import styles from "./page.module.css";
@@ -4358,9 +4393,7 @@ export default async function CartPage() {
         <h1 className={styles.heading}>Cart</h1>
         <p className={styles.empty}>Your cart is empty.</p>
         <p style={{ marginTop: "1.5rem" }}>
-          <Link href="/shop">
-            <Button>Shop</Button>
-          </Link>
+          <ButtonLink href="/shop">Shop</ButtonLink>
         </p>
       </div>
     );
@@ -4441,11 +4474,14 @@ export default async function CartPage() {
           )}
           <p className={styles.note}>Tax is calculated at checkout.</p>
 
-          <Link href="/checkout" style={{ marginTop: "1rem" }}>
-            <Button variant="primary" block>
-              Checkout
-            </Button>
-          </Link>
+          <ButtonLink
+            href="/checkout"
+            variant="primary"
+            block
+            className={styles.checkoutCta}
+          >
+            Checkout
+          </ButtonLink>
         </div>
       </div>
     </div>
