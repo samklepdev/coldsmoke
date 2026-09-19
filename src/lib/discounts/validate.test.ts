@@ -94,6 +94,16 @@ describe("validateDiscount", () => {
     const c = code({ minSubtotalCents: 4500 });
     expect(validateDiscount(c, 4500, NOW).ok).toBe(true);
   });
+
+  it("accepts a code whose startsAt is exactly now", () => {
+    const c = code({ startsAt: NOW });
+    expect(validateDiscount(c, 4500, NOW).ok).toBe(true);
+  });
+
+  it("accepts a code whose endsAt is exactly now", () => {
+    const c = code({ endsAt: NOW });
+    expect(validateDiscount(c, 4500, NOW).ok).toBe(true);
+  });
 });
 
 describe("discountFailureMessage", () => {
@@ -116,5 +126,11 @@ describe("discountFailureMessage", () => {
     for (const reason of reasons) {
       expect(discountFailureMessage(reason)).toBeTruthy();
     }
+  });
+
+  it("falls back to a generic message when below_minimum has no code", () => {
+    expect(discountFailureMessage("below_minimum")).toBe(
+      "Your order is below the minimum for that code.",
+    );
   });
 });

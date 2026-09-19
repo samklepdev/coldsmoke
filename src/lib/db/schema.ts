@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   text,
@@ -9,6 +10,7 @@ import {
   pgEnum,
   uniqueIndex,
   index,
+  check,
 } from "drizzle-orm/pg-core";
 
 export const orderStatus = pgEnum("order_status", [
@@ -126,7 +128,10 @@ export const discountCodes = pgTable(
     endsAt: timestamp("ends_at", { withTimezone: true }),
     active: boolean("active").notNull().default(true),
   },
-  (t) => [uniqueIndex("discount_codes_code_idx").on(t.code)],
+  (t) => [
+    uniqueIndex("discount_codes_code_idx").on(t.code),
+    check("discount_codes_code_lowercase", sql`${t.code} = lower(${t.code})`),
+  ],
 );
 
 export const orders = pgTable(
