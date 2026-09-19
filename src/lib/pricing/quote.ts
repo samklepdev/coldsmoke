@@ -47,6 +47,9 @@ export function quote(
         `Line ${line.productId}: price must be an integer number of cents`,
       );
     }
+    if (line.unitPriceCents < 0) {
+      throw new Error(`Line ${line.productId}: price must not be negative`);
+    }
   }
   if (!Number.isInteger(taxCents) || taxCents < 0) {
     throw new Error("Tax cannot be negative and must be integer cents");
@@ -68,7 +71,7 @@ export function quote(
       : FLAT_SHIPPING_CENTS;
 
   return {
-    lines,
+    lines: lines.map((line) => ({ ...line })),
     subtotalCents,
     discountCents,
     shippingCents,

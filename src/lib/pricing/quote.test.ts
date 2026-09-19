@@ -96,7 +96,10 @@ describe("quote — discounts", () => {
   it("never discounts more than the subtotal", () => {
     const q = quote([sample], { ...fixed500, value: 10000 });
     expect(q.discountCents).toBe(600);
-    expect(q.totalCents).toBeGreaterThanOrEqual(0);
+    // subtotal 600, discount capped at 600 -> discountedSubtotal 0, which is
+    // below the free-shipping threshold, so flat shipping applies, tax is 0:
+    // total = 0 + 600 + 0 = 600.
+    expect(q.totalCents).toBe(600);
   });
 
   it("rounds a percentage discount to the nearest cent", () => {
@@ -172,5 +175,24 @@ describe("quote — invariants", () => {
     ]) {
       expect(Number.isInteger(value)).toBe(true);
     }
+  });
+
+  it("rejects a negative price", () => {
+    expect(() => quote([{ ...bottle, unitPriceCents: -700 }])).toThrow(
+      /price must not be negative/i,
+    );
+  });
+
+  it("accepts a zero price for a free item", () => {
+    const q = quote([{ ...bottle, unitPriceCents: 0 }]);
+    expect(q.subtotalCents).toBe(0);
+  });
+
+  it("does not let the caller's array mutate the returned quote's lines", () => {
+    const lines = [{ ...bottle }];
+    const q = quote(lines);
+    lines.push({ ...sample });
+    lines[0].quantity = 99;
+    expect(q.lines).toEqual([bottle]);
   });
 });
