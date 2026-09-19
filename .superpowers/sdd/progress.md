@@ -12,3 +12,10 @@ Started: 2026-09-19
   User decision. Added `src/lib/orders/reuse.test.ts` (5 tests).
 
 ## Progress
+Task 1: complete (commits b24dfa5..1874f1f, review clean)
+  - Deviations accepted: added `vite` devDep; `!.env.example` in .gitignore;
+    @types/node ^20 -> ^22 + engines.node >=22 (removes need for --legacy-peer-deps).
+  - Minor findings deferred to final review: 4 moderate transitive npm audit
+    vulns; .gitignore missing trailing newline.
+  - Controller added docker-compose.yml (dev Postgres, port 54328) + .env so
+    Task 2 can migrate without a Neon account. Neon is a connection-string swap.
