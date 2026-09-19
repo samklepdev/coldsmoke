@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: coldsmoke
+      POSTGRES_PASSWORD: coldsmoke
+      POSTGRES_DB: coldsmoke_test
+    ports:
+      - "54329:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coldsmoke -d coldsmoke_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
