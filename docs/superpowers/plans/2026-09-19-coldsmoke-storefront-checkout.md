@@ -1959,7 +1959,8 @@ git commit -m "feat: transactional inventory with reservation expiry"
 - Consumes: `db`, `carts`, `cartItems`, `getProductsByIds`, `quote`
 - Produces:
   - `CART_COOKIE = "cs_cart"`
-  - `getOrCreateCartId(): Promise<string>` (reads/writes the cookie)
+  - `getCartId(): Promise<string | null>` (read-only — safe in Server Components)
+  - `getOrCreateCartId(): Promise<string>` (writes the cookie — Server Actions and Route Handlers ONLY)
   - `getCartLines(cartId: string): Promise<QuoteLine[]>`
   - `addItem(cartId: string, productId: string, quantity: number): Promise<void>`
   - `setQuantity(cartId: string, productId: string, quantity: number): Promise<void>`
@@ -2098,9 +2099,34 @@ export const CART_COOKIE = "cs_cart";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 /**
+ * Reads the caller's cart id without creating one. Safe to call while
+ * rendering a Server Component.
+ *
+ * Next.js only permits cookies().set() inside a Server Action or Route
+ * Handler — calling it during render throws. So pages and layouts must use
+ * this read-only path, and only mutations may create a cart.
+ */
+export async function getCartId(): Promise<string | null> {
+  const jar = await cookies();
+  const existing = jar.get(CART_COOKIE)?.value;
+  if (!existing) return null;
+
+  const [found] = await db
+    .select({ id: carts.id })
+    .from(carts)
+    .where(eq(carts.id, existing))
+    .limit(1);
+
+  return found?.id ?? null;
+}
+
+/**
  * Resolves the caller's cart, creating one if needed. Guest carts are
  * identified by a uuid in an httpOnly cookie; Plan 2 attaches userId on
  * sign-in and merges.
+ *
+ * WRITES A COOKIE — callable only from a Server Action or Route Handler.
+ * Server Components must use getCartId() instead.
  */
 export async function getOrCreateCartId(): Promise<string> {
   const jar = await cookies();
@@ -3589,11 +3615,12 @@ Create `src/app/(store)/layout.tsx`:
 ```tsx
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
-import { getOrCreateCartId, getCartLines } from "@/lib/cart";
+import { getCartId, getCartLines } from "@/lib/cart";
 
 export default async function StoreLayout({ children }: LayoutProps<"/">) {
-  const cartId = await getOrCreateCartId();
-  const lines = await getCartLines(cartId);
+  // Read-only: a layout renders as a Server Component and may not set cookies.
+  const cartId = await getCartId();
+  const lines = cartId ? await getCartLines(cartId) : [];
   const count = lines.reduce((sum, line) => sum + line.quantity, 0);
 
   return (
@@ -4165,13 +4192,18 @@ export async function applyDiscountAction(
   return { applied: result.discount.code };
 }
 
-/** Shared by the cart and checkout pages so both price identically. */
+/**
+ * Shared by the cart and checkout pages so both price identically. Read-only
+ * on purpose — it runs during Server Component render, where setting a cookie
+ * would throw.
+ */
 export async function getActiveDiscount() {
   const jar = await cookies();
   const stored = jar.get(DISCOUNT_COOKIE)?.value;
   if (!stored) return null;
 
-  const cartId = await getOrCreateCartId();
+  const cartId = await getCartId();
+  if (!cartId) return null;
   const lines = await getCartLines(cartId);
   const { subtotalCents } = quote(lines);
 
@@ -4304,7 +4336,7 @@ Create `src/app/(store)/cart/page.tsx`:
 ```tsx
 import Link from "next/link";
 import type { Metadata } from "next";
-import { getOrCreateCartId, getCartLines } from "@/lib/cart";
+import { getCartId, getCartLines } from "@/lib/cart";
 import { quote, FREE_SHIPPING_THRESHOLD_CENTS } from "@/lib/pricing/quote";
 import { formatCents } from "@/lib/money";
 import { Button } from "@/components/ui/Button";
@@ -4315,8 +4347,8 @@ import styles from "./page.module.css";
 export const metadata: Metadata = { title: "Cart" };
 
 export default async function CartPage() {
-  const cartId = await getOrCreateCartId();
-  const lines = await getCartLines(cartId);
+  const cartId = await getCartId();
+  const lines = cartId ? await getCartLines(cartId) : [];
   const discount = await getActiveDiscount();
   const summary = quote(lines, discount);
 
@@ -4728,15 +4760,15 @@ Create `src/app/(store)/checkout/page.tsx`:
 ```tsx
 import { redirect } from "next/navigation";
 import type { Metadata } from "next";
-import { getOrCreateCartId, getCartLines } from "@/lib/cart";
+import { getCartId, getCartLines } from "@/lib/cart";
 import { CheckoutForm } from "./CheckoutForm";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = { title: "Checkout" };
 
 export default async function CheckoutPage() {
-  const cartId = await getOrCreateCartId();
-  const lines = await getCartLines(cartId);
+  const cartId = await getCartId();
+  const lines = cartId ? await getCartLines(cartId) : [];
   if (lines.length === 0) redirect("/cart");
 
   return (

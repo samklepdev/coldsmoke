@@ -55,3 +55,25 @@ Task 5: complete (commit 53ceb98, review clean, no fixes needed)
     checks active itself so it can distinguish deleted from deactivated.
   - Minor deferred to final review: `?? 0` coalesce is dead code given GREATEST
     semantics; availability-shaping SQL duplicated across two call sites.
+Task 6: complete (commits fe6d4db..5b69753, review clean after 1 fix)
+  - Critical fixed: releaseExpiredReservations cancelled orders unconditionally,
+    so a webhook marking an order paid in the gap between the SELECT and the
+    per-order transaction got its status overwritten to cancelled. releaseStock
+    now returns bool; cancel only when it actually released, guarded by
+    status='pending'.
+  - Reviewer EMPIRICALLY confirmed the WHERE-clause reservation guard against
+    live Postgres (EvalPlanQual re-evaluation under READ COMMITTED).
+  - Added 12-racer/5-unit contention test; original 2-buyer test relied on
+    incidental scheduling.
+  - Controller commit 2ae63fe: dev and test Compose stacks shared a project
+    name, so starting test DESTROYED the dev container and remounted its volume.
+    Now separate projects/volumes.
+Task 7: complete (commit d3dda65, brief's vi.mock path worked, no refactor)
+  - Implementer flagged cross-file TRUNCATE races on the shared test DB.
+    Controller fixed via fileParallelism: false. Suite now stable 67/67 x3.
+Controller fixes applied after Task 7 (from auditing the plan ahead):
+  - getCartId() added: read-only cart lookup for Server Components. Next.js
+    forbids cookies().set() during render, so the plan's layout/cart/checkout
+    pages calling getOrCreateCartId would have thrown on first load.
+  - orders.cart_id column + migration 0003, so the webhook can clear the cart
+    after payment. clearCart existed and was tested but called from nowhere.

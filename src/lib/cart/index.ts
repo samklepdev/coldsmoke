@@ -9,9 +9,34 @@ export const CART_COOKIE = "cs_cart";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 /**
+ * Reads the caller's cart id without creating one. Safe to call while
+ * rendering a Server Component.
+ *
+ * Next.js only permits cookies().set() inside a Server Action or Route
+ * Handler — calling it during render throws. Pages and layouts must therefore
+ * use this read-only path, and only mutations may create a cart.
+ */
+export async function getCartId(): Promise<string | null> {
+  const jar = await cookies();
+  const existing = jar.get(CART_COOKIE)?.value;
+  if (!existing) return null;
+
+  const [found] = await db
+    .select({ id: carts.id })
+    .from(carts)
+    .where(eq(carts.id, existing))
+    .limit(1);
+
+  return found?.id ?? null;
+}
+
+/**
  * Resolves the caller's cart, creating one if needed. Guest carts are
  * identified by a uuid in an httpOnly cookie; Plan 2 attaches userId on
  * sign-in and merges.
+ *
+ * WRITES A COOKIE — callable only from a Server Action or Route Handler.
+ * Server Components must use getCartId() instead.
  */
 export async function getOrCreateCartId(): Promise<string> {
   const jar = await cookies();

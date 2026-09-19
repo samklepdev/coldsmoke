@@ -142,6 +142,10 @@ export const orders = pgTable(
       .notNull()
       .generatedByDefaultAsIdentity({ startWith: 1000 }),
     userId: text("user_id"),
+    // The cart this order came from, so the webhook can empty it once payment
+    // actually succeeds. Nulled rather than cascaded if the cart is deleted —
+    // an order must outlive the cart that produced it.
+    cartId: uuid("cart_id").references(() => carts.id, { onDelete: "set null" }),
     email: text("email").notNull(),
     status: orderStatus("status").notNull().default("pending"),
     stripePaymentIntentId: text("stripe_payment_intent_id"),
