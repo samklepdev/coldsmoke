@@ -1,5 +1,5 @@
 import { and, eq, lt, sql } from "drizzle-orm";
-import { db, type Tx } from "@/lib/db/client";
+import { db, type Db, type Tx } from "@/lib/db/client";
 import { inventory, orders, orderItems } from "@/lib/db/schema";
 
 export const RESERVATION_WINDOW_MS = 15 * 60 * 1000;
@@ -69,10 +69,18 @@ export async function commitStock(tx: Tx, orderId: string): Promise<void> {
   }
 }
 
-/** Returns reserved units to the available pool. Idempotent. */
-export async function releaseStock(tx: Tx, orderId: string): Promise<void> {
+/**
+ * Returns reserved units to the available pool. Idempotent.
+ *
+ * @returns true if the reservation was actually released (the order was
+ *   still in the "reserved" inventory state), false if there was nothing to
+ *   do — e.g. the order was already committed or released by another
+ *   caller. Callers that conditionally act on the release (such as
+ *   cancelling the order) must check this before doing so.
+ */
+export async function releaseStock(tx: Tx, orderId: string): Promise<boolean> {
   const claimed = await claimInventoryState(tx, orderId, "reserved", "released");
-  if (!claimed) return;
+  if (!claimed) return false;
 
   const items = await tx
     .select()
@@ -88,6 +96,8 @@ export async function releaseStock(tx: Tx, orderId: string): Promise<void> {
       })
       .where(eq(inventory.productId, item.productId));
   }
+
+  return true;
 }
 
 /**
@@ -114,9 +124,16 @@ async function claimInventoryState(
  * Releases reservations for pending orders past their expiry window, so an
  * abandoned checkout does not hold a bottle forever. Called by the cron route
  * and lazily before reservation-sensitive reads.
+ *
+ * The candidate list is selected outside any transaction, so an order can
+ * change state (e.g. a Stripe webhook committing it to "paid") in the gap
+ * between that SELECT and this function reaching it. Each order is therefore
+ * only cancelled if `releaseStock` actually released it — and the status
+ * write is additionally guarded on `status = "pending"` as a second line of
+ * defence, so a stale candidate can never clobber a non-pending order.
  */
-export async function releaseExpiredReservations(): Promise<number> {
-  const expired = await db
+export async function releaseExpiredReservations(database: Db = db): Promise<number> {
+  const expired = await database
     .select({ id: orders.id })
     .from(orders)
     .where(
@@ -127,15 +144,22 @@ export async function releaseExpiredReservations(): Promise<number> {
       ),
     );
 
+  let cancelledCount = 0;
+
   for (const order of expired) {
-    await db.transaction(async (tx) => {
-      await releaseStock(tx, order.id);
-      await tx
+    await database.transaction(async (tx) => {
+      const released = await releaseStock(tx, order.id);
+      if (!released) return;
+
+      const cancelled = await tx
         .update(orders)
         .set({ status: "cancelled", cancelledAt: new Date() })
-        .where(eq(orders.id, order.id));
+        .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
+        .returning({ id: orders.id });
+
+      if (cancelled.length > 0) cancelledCount++;
     });
   }
 
-  return expired.length;
+  return cancelledCount;
 }
