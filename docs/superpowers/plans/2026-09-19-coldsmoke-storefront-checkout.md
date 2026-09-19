@@ -2600,7 +2600,12 @@ import {
   type Address,
 } from "@/lib/db/schema";
 import { quote, type QuoteLine, type AppliedDiscount } from "@/lib/pricing/quote";
-import { reserveStock, commitStock, RESERVATION_WINDOW_MS } from "@/lib/inventory";
+import {
+  reserveStock,
+  releaseStock,
+  commitStock,
+  RESERVATION_WINDOW_MS,
+} from "@/lib/inventory";
 import { redeemDiscount } from "@/lib/discounts";
 import { getPayments } from "@/lib/payments";
 
@@ -2637,34 +2642,61 @@ export async function createPendingOrder(args: {
   });
   const final = quote(cartLines, discount, tax.taxCents);
 
+  const money = {
+    email,
+    discountCodeId: discount?.id ?? null,
+    subtotalCents: final.subtotalCents,
+    discountCents: final.discountCents,
+    shippingCents: final.shippingCents,
+    taxCents: final.taxCents,
+    totalCents: final.totalCents,
+    shippingAddress,
+    billingAddress: args.billingAddress ?? shippingAddress,
+    reservationExpiresAt: new Date(Date.now() + RESERVATION_WINDOW_MS),
+  };
+
+  const lineValues = (orderId: string) =>
+    cartLines.map((line) => ({
+      orderId,
+      productId: line.productId,
+      name: line.name,
+      unitPriceCents: line.unitPriceCents,
+      quantity: line.quantity,
+      totalCents: line.unitPriceCents * line.quantity,
+    }));
+
+  const reusable = args.existingOrderId
+    ? await findReusablePendingOrder(args.existingOrderId)
+    : null;
+
   const order = await db.transaction(async (tx) => {
+    if (reusable) {
+      // Editing an address must not stack a second reservation on top of the
+      // first. Give the old units back, then re-reserve against the new lines.
+      await releaseStock(tx, reusable.id);
+      await tx.delete(orderItems).where(eq(orderItems.orderId, reusable.id));
+      await tx.insert(orderItems).values(lineValues(reusable.id));
+
+      await reserveStock(
+        tx,
+        cartLines.map((l) => ({ productId: l.productId, quantity: l.quantity })),
+      );
+
+      const [updated] = await tx
+        .update(orders)
+        .set({ ...money, inventoryState: "reserved" })
+        .where(eq(orders.id, reusable.id))
+        .returning();
+
+      return updated;
+    }
+
     const [created] = await tx
       .insert(orders)
-      .values({
-        email,
-        status: "pending",
-        discountCodeId: discount?.id ?? null,
-        subtotalCents: final.subtotalCents,
-        discountCents: final.discountCents,
-        shippingCents: final.shippingCents,
-        taxCents: final.taxCents,
-        totalCents: final.totalCents,
-        shippingAddress,
-        billingAddress: args.billingAddress ?? shippingAddress,
-        reservationExpiresAt: new Date(Date.now() + RESERVATION_WINDOW_MS),
-      })
+      .values({ ...money, status: "pending" })
       .returning();
 
-    await tx.insert(orderItems).values(
-      cartLines.map((line) => ({
-        orderId: created.id,
-        productId: line.productId,
-        name: line.name,
-        unitPriceCents: line.unitPriceCents,
-        quantity: line.quantity,
-        totalCents: line.unitPriceCents * line.quantity,
-      })),
-    );
+    await tx.insert(orderItems).values(lineValues(created.id));
 
     // Throws OutOfStockError and rolls back the order if stock is gone.
     await reserveStock(
@@ -2680,7 +2712,7 @@ export async function createPendingOrder(args: {
   });
 
   const intent = await payments.createOrUpdateIntent({
-    paymentIntentId: null,
+    paymentIntentId: reusable?.stripePaymentIntentId ?? null,
     amountCents: final.totalCents,
     email,
     orderId: order.id,
@@ -2693,6 +2725,27 @@ export async function createPendingOrder(args: {
     .where(eq(orders.id, order.id));
 
   return { order, clientSecret: intent.clientSecret };
+}
+
+/**
+ * An order may only be reused while it is still pending with a live
+ * reservation. Anything paid, failed, or already swept must start fresh —
+ * reusing a paid order would let a second charge overwrite a real sale.
+ */
+async function findReusablePendingOrder(orderId: string): Promise<Order | null> {
+  const [order] = await db
+    .select()
+    .from(orders)
+    .where(
+      and(
+        eq(orders.id, orderId),
+        eq(orders.status, "pending"),
+        eq(orders.inventoryState, "reserved"),
+      ),
+    )
+    .limit(1);
+
+  return order ?? null;
 }
 
 /**
@@ -2770,12 +2823,190 @@ export async function findOrderById(id: string): Promise<OrderWithItems | null> 
 }
 ```
 
-- [ ] **Step 6: Verify it type-checks and commit**
+- [ ] **Step 6: Write the pending-order reuse test**
+
+Create `src/lib/orders/reuse.test.ts`:
+
+```ts
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { eq } from "drizzle-orm";
+import { testDb } from "@/test/db";
+import { products, inventory, orders } from "@/lib/db/schema";
+import { FakePayments } from "@/lib/payments/fake";
+
+const fake = new FakePayments();
+vi.mock("@/lib/payments", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/payments")>(
+    "@/lib/payments",
+  );
+  return { ...actual, getPayments: () => fake };
+});
+
+let ctx: Awaited<ReturnType<typeof testDb>>;
+vi.mock("@/lib/db/client", async () => {
+  const { testDb } = await import("@/test/db");
+  const shared = await testDb();
+  return { db: shared.db };
+});
+
+const { createPendingOrder } = await import("./index");
+
+let productId: string;
+const ADDRESS = {
+  name: "Test Buyer",
+  line1: "1 Powder Lane",
+  city: "Bozeman",
+  state: "MT",
+  postalCode: "59715",
+  country: "US" as const,
+};
+
+beforeAll(async () => {
+  ctx = await testDb();
+});
+
+afterAll(async () => {
+  await ctx.close();
+});
+
+beforeEach(async () => {
+  await ctx.truncate();
+  const [product] = await ctx.db
+    .insert(products)
+    .values({
+      slug: "edt",
+      name: "Coldsmoke Eau de Toilette",
+      description: "d",
+      priceCents: 4500,
+      sku: "CS-1",
+    })
+    .returning();
+  productId = product.id;
+  await ctx.db.insert(inventory).values({ productId, onHand: 5, reserved: 0 });
+});
+
+function lines(quantity = 1) {
+  return [
+    {
+      productId,
+      name: "Coldsmoke Eau de Toilette",
+      unitPriceCents: 4500,
+      quantity,
+    },
+  ];
+}
+
+async function reserved() {
+  const [row] = await ctx.db
+    .select()
+    .from(inventory)
+    .where(eq(inventory.productId, productId));
+  return row.reserved;
+}
+
+describe("createPendingOrder reuse", () => {
+  it("reserves stock once for a first submission", async () => {
+    await createPendingOrder({
+      cartLines: lines(1),
+      email: "buyer@example.com",
+      shippingAddress: ADDRESS,
+    });
+    expect(await reserved()).toBe(1);
+  });
+
+  it("does not stack reservations when an address is corrected", async () => {
+    const first = await createPendingOrder({
+      cartLines: lines(1),
+      email: "buyer@example.com",
+      shippingAddress: ADDRESS,
+    });
+
+    await createPendingOrder({
+      cartLines: lines(1),
+      email: "buyer@example.com",
+      shippingAddress: { ...ADDRESS, line1: "2 Powder Lane" },
+      existingOrderId: first.order.id,
+    });
+
+    expect(await reserved()).toBe(1);
+
+    const rows = await ctx.db.select().from(orders);
+    expect(rows).toHaveLength(1);
+    expect((rows[0].shippingAddress as typeof ADDRESS).line1).toBe("2 Powder Lane");
+  });
+
+  it("adjusts the reservation when the quantity changes", async () => {
+    const first = await createPendingOrder({
+      cartLines: lines(1),
+      email: "buyer@example.com",
+      shippingAddress: ADDRESS,
+    });
+
+    await createPendingOrder({
+      cartLines: lines(3),
+      email: "buyer@example.com",
+      shippingAddress: ADDRESS,
+      existingOrderId: first.order.id,
+    });
+
+    expect(await reserved()).toBe(3);
+  });
+
+  it("reuses the same PaymentIntent rather than creating a second", async () => {
+    const first = await createPendingOrder({
+      cartLines: lines(1),
+      email: "buyer@example.com",
+      shippingAddress: ADDRESS,
+    });
+
+    const second = await createPendingOrder({
+      cartLines: lines(2),
+      email: "buyer@example.com",
+      shippingAddress: ADDRESS,
+      existingOrderId: first.order.id,
+    });
+
+    expect(second.order.id).toBe(first.order.id);
+    expect(fake.intents.size).toBe(1);
+  });
+
+  it("starts a fresh order when the existing one is already paid", async () => {
+    const first = await createPendingOrder({
+      cartLines: lines(1),
+      email: "buyer@example.com",
+      shippingAddress: ADDRESS,
+    });
+
+    await ctx.db
+      .update(orders)
+      .set({ status: "paid", inventoryState: "committed" })
+      .where(eq(orders.id, first.order.id));
+
+    const second = await createPendingOrder({
+      cartLines: lines(1),
+      email: "buyer@example.com",
+      shippingAddress: ADDRESS,
+      existingOrderId: first.order.id,
+    });
+
+    expect(second.order.id).not.toBe(first.order.id);
+    const rows = await ctx.db.select().from(orders);
+    expect(rows).toHaveLength(2);
+  });
+});
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `npm test -- src/lib/orders`
+Expected: PASS — 5 formatting tests plus 5 reuse tests.
+
+- [ ] **Step 8: Verify it type-checks and commit**
 
 ```bash
 npx tsc --noEmit
 git add src/lib/orders
-git commit -m "feat: order creation and idempotent paid transition"
+git commit -m "feat: order creation, pending-order reuse, and idempotent paid transition"
 ```
 
 ---
@@ -3819,7 +4050,29 @@ git commit -m "feat: home, shop, and product pages"
 - Consumes: `getCartLines`, `quote`, `lookupDiscount`, `validateDiscount`, `discountFailureMessage`
 - Produces: `applyDiscountAction(prev, formData): Promise<DiscountFormState>`; discount code persisted in the `cs_discount` cookie
 
-- [ ] **Step 1: Add the discount Server Action**
+- [ ] **Step 1a: Create the cookie-name module**
+
+A `"use server"` file may export **only async functions** — Next.js rejects a
+plain `const` export from a server-action module at build time. Cookie names
+therefore live in their own module.
+
+Create `src/lib/cookies.ts`:
+
+```ts
+export const CART_COOKIE = "cs_cart";
+export const DISCOUNT_COOKIE = "cs_discount";
+export const PENDING_ORDER_COOKIE = "cs_pending_order";
+```
+
+Then update `src/lib/cart/index.ts` to import `CART_COOKIE` from
+`@/lib/cookies` instead of declaring it, and re-export it for compatibility:
+
+```ts
+import { CART_COOKIE } from "@/lib/cookies";
+export { CART_COOKIE };
+```
+
+- [ ] **Step 1b: Add the discount Server Action**
 
 Append to `src/app/(store)/actions.ts`:
 
@@ -3827,13 +4080,12 @@ Append to `src/app/(store)/actions.ts`:
 import { cookies } from "next/headers";
 import { getCartLines } from "@/lib/cart";
 import { quote } from "@/lib/pricing/quote";
+import { DISCOUNT_COOKIE } from "@/lib/cookies";
 import {
   lookupDiscount,
   validateDiscount,
   discountFailureMessage,
 } from "@/lib/discounts";
-
-export const DISCOUNT_COOKIE = "cs_discount";
 
 export type DiscountFormState = { error?: string; applied?: string };
 
@@ -4159,9 +4411,11 @@ Create `src/app/(store)/checkout/actions.ts`:
 "use server";
 
 import { z } from "zod";
+import { cookies } from "next/headers";
 import { getOrCreateCartId, getCartLines } from "@/lib/cart";
 import { createPendingOrder } from "@/lib/orders";
 import { OutOfStockError } from "@/lib/inventory";
+import { PENDING_ORDER_COOKIE } from "@/lib/cookies";
 import { getActiveDiscount } from "../actions";
 import type { Address } from "@/lib/db/schema";
 
@@ -4211,12 +4465,28 @@ export async function startCheckoutAction(
 
   const discount = await getActiveDiscount();
 
+  // Reuse any pending order from an earlier submit on this checkout, so
+  // editing an address updates one reservation instead of stacking another.
+  // A stale or already-paid id is safe: createPendingOrder verifies the order
+  // is still pending with a live reservation before reusing it.
+  const jar = await cookies();
+  const existingOrderId = jar.get(PENDING_ORDER_COOKIE)?.value ?? null;
+
   try {
     const { order, clientSecret } = await createPendingOrder({
       cartLines: lines,
       email,
       shippingAddress,
       discount,
+      existingOrderId,
+    });
+
+    jar.set(PENDING_ORDER_COOKIE, order.id, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 60 * 30,
     });
 
     return {
