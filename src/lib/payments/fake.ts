@@ -4,13 +4,18 @@ import type {
   IntentResult,
   WebhookEvent,
 } from "./types";
+import { PaymentIntentNotUpdatableError } from "./types";
+
+const TERMINAL_INTENT_STATUSES = new Set(["succeeded", "canceled", "processing"]);
+
+type FakeIntent = { amountCents: number; orderId: string; status: string };
 
 /**
  * In-memory adapter for tests. Tax is a flat 8% of the taxable base so
  * assertions stay predictable.
  */
 export class FakePayments implements PaymentsAdapter {
-  public intents = new Map<string, { amountCents: number; orderId: string }>();
+  public intents = new Map<string, FakeIntent>();
   public refunds: { paymentIntentId: string; amountCents: number }[] = [];
   private counter = 0;
 
@@ -34,9 +39,30 @@ export class FakePayments implements PaymentsAdapter {
   }: Parameters<
     PaymentsAdapter["createOrUpdateIntent"]
   >[0]): Promise<IntentResult> {
+    if (paymentIntentId) {
+      const existing = this.intents.get(paymentIntentId);
+      if (existing && TERMINAL_INTENT_STATUSES.has(existing.status)) {
+        // Mirrors StripePayments: do NOT fall back to creating a replacement
+        // intent here. If the original already succeeded, the customer has
+        // paid; quietly minting a second intent invites a double charge.
+        throw new PaymentIntentNotUpdatableError(paymentIntentId, existing.status);
+      }
+    }
+
     const id = paymentIntentId ?? `pi_fake_${++this.counter}`;
-    this.intents.set(id, { amountCents, orderId });
+    const status = this.intents.get(id)?.status ?? "requires_payment_method";
+    this.intents.set(id, { amountCents, orderId, status });
     return { paymentIntentId: id, clientSecret: `${id}_secret` };
+  }
+
+  /** Test helper: flips an intent's status to "succeeded" so tests can set
+   * up the terminal-state scenario. */
+  markSucceeded(paymentIntentId: string): void {
+    const existing = this.intents.get(paymentIntentId);
+    if (!existing) {
+      throw new Error(`No fake intent ${paymentIntentId} to mark succeeded`);
+    }
+    existing.status = "succeeded";
   }
 
   async refund({

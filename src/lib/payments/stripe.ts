@@ -5,6 +5,9 @@ import type {
   IntentResult,
   WebhookEvent,
 } from "./types";
+import { PaymentIntentNotUpdatableError } from "./types";
+
+const TERMINAL_INTENT_STATUSES = new Set(["succeeded", "canceled", "processing"]);
 
 // This is the ONLY file permitted to import the stripe package.
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
@@ -64,19 +67,30 @@ export class StripePayments implements PaymentsAdapter {
   >[0]): Promise<IntentResult> {
     const metadata = { orderId, orderNumber: String(orderNumber) };
 
-    const intent = paymentIntentId
-      ? await stripe.paymentIntents.update(paymentIntentId, {
-          amount: amountCents,
-          receipt_email: email,
-          metadata,
-        })
-      : await stripe.paymentIntents.create({
-          amount: amountCents,
-          currency: "usd",
-          receipt_email: email,
-          metadata,
-          automatic_payment_methods: { enabled: true },
-        });
+    let intent: Stripe.PaymentIntent;
+    if (paymentIntentId) {
+      const existing = await stripe.paymentIntents.retrieve(paymentIntentId);
+      if (TERMINAL_INTENT_STATUSES.has(existing.status)) {
+        // Do NOT fall back to creating a replacement intent here. If the
+        // original already succeeded, the customer has paid; quietly minting
+        // a second intent invites a double charge. Callers must treat this
+        // as terminal, not retryable.
+        throw new PaymentIntentNotUpdatableError(paymentIntentId, existing.status);
+      }
+      intent = await stripe.paymentIntents.update(paymentIntentId, {
+        amount: amountCents,
+        receipt_email: email,
+        metadata,
+      });
+    } else {
+      intent = await stripe.paymentIntents.create({
+        amount: amountCents,
+        currency: "usd",
+        receipt_email: email,
+        metadata,
+        automatic_payment_methods: { enabled: true },
+      });
+    }
 
     return {
       paymentIntentId: intent.id,
@@ -108,11 +122,16 @@ export class StripePayments implements PaymentsAdapter {
         ? (object.id as string)
         : ((object.payment_intent as string) ?? null);
 
+    // For a refund event, the charge's `amount` is its original total, not
+    // what was refunded. `amount_refunded` is the actual refunded amount.
+    const amountField =
+      event.type === "charge.refunded" ? object.amount_refunded : object.amount;
+
     return {
       id: event.id,
       type: event.type,
       paymentIntentId,
-      amountCents: typeof object.amount === "number" ? object.amount : null,
+      amountCents: typeof amountField === "number" ? amountField : null,
       metadata: (object.metadata as Record<string, string>) ?? {},
     };
   }

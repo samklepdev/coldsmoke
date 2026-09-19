@@ -23,6 +23,21 @@ export type WebhookEvent = {
  * The boundary around Stripe. Every other module depends on this interface, so
  * tests substitute FakePayments and run with no network access.
  */
+/**
+ * Thrown when a PaymentIntent can no longer be modified because it reached a
+ * terminal state — typically the order was already paid. Callers should treat
+ * this as "this order is finished", not as a retryable failure.
+ */
+export class PaymentIntentNotUpdatableError extends Error {
+  constructor(
+    public readonly paymentIntentId: string,
+    public readonly status: string,
+  ) {
+    super(`PaymentIntent ${paymentIntentId} is ${status} and cannot be updated`);
+    this.name = "PaymentIntentNotUpdatableError";
+  }
+}
+
 export interface PaymentsAdapter {
   calculateTax(args: {
     lines: QuoteLine[];
