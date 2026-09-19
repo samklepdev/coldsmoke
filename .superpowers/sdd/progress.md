@@ -45,3 +45,13 @@ Task 4: complete (commits 77e072a..57783f1, review clean after 1 fix wave)
   - Minors fixed: inclusive boundary tests (startsAt/endsAt == now), fallback
     message test, DB CHECK constraint enforcing lowercase codes (migration 0002).
   - 16 tests passing. Plan + task-9-brief patched for the new boolean caller.
+Task 5: complete (commit 53ceb98, review clean, no fixes needed)
+  - Reviewer verified the no-inventory-row path against a live DB (not just
+    inspection): product appears with available: 0. Postgres GREATEST ignores
+    NULLs unless all args are NULL, so the leftJoin is correct.
+  - sql<number> cast confirmed safe: onHand/reserved are int4, arithmetic stays
+    int4, postgres-js returns a real JS number (no string/NaN leak).
+  - getProductsByIds deliberately does NOT filter by active — the cart layer
+    checks active itself so it can distinguish deleted from deactivated.
+  - Minor deferred to final review: `?? 0` coalesce is dead code given GREATEST
+    semantics; availability-shaping SQL duplicated across two call sites.
