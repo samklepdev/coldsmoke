@@ -77,3 +77,18 @@ Controller fixes applied after Task 7 (from auditing the plan ahead):
     pages calling getOrCreateCartId would have thrown on first load.
   - orders.cart_id column + migration 0003, so the webhook can clear the cart
     after payment. clearCart existed and was tested but called from nowhere.
+Task 8: implemented (commit b9043fc), review NOT APPROVED — fix QUEUED,
+  deliberately held until Task 9 lands (Task 9's tests run against FakePayments).
+  - Important 1: createOrUpdateIntent does not guard against updating a
+    PaymentIntent already succeeded/canceled. Checkout reuses a pending order's
+    PI across address edits, so an edit after success throws a raw Stripe
+    invalid_request_error out of a Server Action, untranslated.
+  - Important 2: FakePayments overwrites its map with no status tracking, so it
+    CANNOT reproduce Important 1 — downstream tests pass while prod breaks.
+  - Minor: charge.refunded amountCents reads Charge.amount, not amount_refunded.
+  - Confirmed GOOD: calculateTax's taxable base agrees with pricing.quote()
+    (both subtotal - discountCents, clamped >= 0); tax_amount_exclusive correct.
+  - Deviations accepted: apiVersion 2026-08-26.dahlia (SDK-required literal);
+    widened cast in verifyWebhook, contained to stripe.ts.
+Controller fix (commit fb19dbd): added ButtonLink. Four call sites nested
+  <Button> inside <Link> — invalid HTML, two tab stops per control.
