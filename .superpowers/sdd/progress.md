@@ -25,3 +25,12 @@ Task 2: complete (commits 879ba03..609754a, review clean after 1 fix)
     bump, which 1874f1f had left stale (npm ci would have regressed it).
   - Minor deferred to final review: no index on orders.user_id (defer to the
     auth plan that creates the user table).
+Task 3: complete (commits dc0eb1e..837b814, approved on re-review)
+  - Review found 1 Critical (negative unitPriceCents -> negative total) and
+    1 Important (returned lines aliased caller's array). Both were defects in
+    the PLAN's code, not implementer error.
+  - Fix: reject unitPriceCents < 0 (zero still allowed); deep-copy lines via
+    lines.map(l => ({...l})). Shallow [...lines] was tried first and rejected
+    as insufficient — it shares the line objects.
+  - Plan file patched to match so a re-run does not reproduce the bug.
+  - 26 tests passing (23 original, unweakened + 3 new).

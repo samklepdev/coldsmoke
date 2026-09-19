@@ -940,8 +940,25 @@ describe("quote — invariants", () => {
 
   it("rejects a non-integer price, guarding against float money", () => {
     expect(() => quote([{ ...bottle, unitPriceCents: 45.5 }])).toThrow(
-      /must be an integer number of cents/i,
+      /must be a non-negative integer number of cents/i,
     );
+  });
+
+  it("rejects a negative price, which would otherwise yield a negative total", () => {
+    expect(() => quote([{ ...bottle, unitPriceCents: -700 }])).toThrow(
+      /must be a non-negative integer number of cents/i,
+    );
+  });
+
+  it("accepts a zero price, since a free item is legitimate", () => {
+    expect(quote([{ ...bottle, unitPriceCents: 0 }]).subtotalCents).toBe(0);
+  });
+
+  it("returns lines that do not alias the caller's array", () => {
+    const lines = [{ ...bottle }];
+    const q = quote(lines);
+    lines[0].quantity = 99;
+    expect(q.lines[0].quantity).toBe(1);
   });
 
   it("rejects negative tax", () => {
@@ -1017,9 +1034,9 @@ export function quote(
         `Line ${line.productId}: quantity must be a positive integer`,
       );
     }
-    if (!Number.isInteger(line.unitPriceCents)) {
+    if (!Number.isInteger(line.unitPriceCents) || line.unitPriceCents < 0) {
       throw new Error(
-        `Line ${line.productId}: price must be an integer number of cents`,
+        `Line ${line.productId}: price must be a non-negative integer number of cents`,
       );
     }
   }
@@ -1043,7 +1060,11 @@ export function quote(
       : FLAT_SHIPPING_CENTS;
 
   return {
-    lines,
+    // Deep-copied, not aliased: a quote is an immutable snapshot. A shallow
+    // [...lines] would still hand back the caller's line OBJECTS, so mutating
+    // line.quantity afterward would leave lines disagreeing with the totals
+    // computed from them.
+    lines: lines.map((line) => ({ ...line })),
     subtotalCents,
     discountCents,
     shippingCents,
