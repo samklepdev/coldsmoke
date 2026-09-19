@@ -547,6 +547,9 @@ export const orders = pgTable(
       .notNull()
       .generatedByDefaultAsIdentity({ startWith: 1000 }),
     userId: text("user_id"),
+    // The cart this order came from, so the webhook can empty it once the
+    // payment actually succeeds.
+    cartId: uuid("cart_id").references(() => carts.id, { onDelete: "set null" }),
     email: text("email").notNull(),
     status: orderStatus("status").notNull().default("pending"),
     stripePaymentIntentId: text("stripe_payment_intent_id"),
@@ -2643,6 +2646,7 @@ export type OrderWithItems = Order & { items: OrderItem[] };
  */
 export async function createPendingOrder(args: {
   cartLines: QuoteLine[];
+  cartId?: string | null;
   email: string;
   shippingAddress: Address;
   billingAddress?: Address | null;
@@ -2665,6 +2669,7 @@ export async function createPendingOrder(args: {
 
   const money = {
     email,
+    cartId: args.cartId ?? null,
     discountCodeId: discount?.id ?? null,
     subtotalCents: final.subtotalCents,
     discountCents: final.discountCents,
@@ -4510,6 +4515,7 @@ export async function startCheckoutAction(
   try {
     const { order, clientSecret } = await createPendingOrder({
       cartLines: lines,
+      cartId,
       email,
       shippingAddress,
       discount,
@@ -4777,7 +4783,7 @@ import { orders, stripeEvents } from "@/lib/db/schema";
 import { getPayments } from "@/lib/payments";
 import { markOrderPaid, findOrderById } from "@/lib/orders";
 import { sendOrderConfirmation } from "@/lib/email";
-import { releaseStock } from "@/lib/inventory";
+import { clearCart } from "@/lib/cart";
 
 export async function POST(request: Request) {
   const signature = request.headers.get("stripe-signature");
@@ -4805,6 +4811,12 @@ export async function POST(request: Request) {
         // means this event was already processed.
         const order = await markOrderPaid(event.paymentIntentId, event.id);
         if (order) {
+          // Empty the cart that produced this order. The webhook is the only
+          // authoritative "payment succeeded" signal — clearing client-side
+          // after confirmPayment would leave a full cart behind whenever the
+          // customer closes the tab, letting them re-purchase by accident.
+          if (order.cartId) await clearCart(order.cartId);
+
           const full = await findOrderById(order.id);
           if (full) await sendOrderConfirmation(full);
         }
@@ -4847,14 +4859,27 @@ async function handleFailure(eventId: string, paymentIntentId: string) {
 
     if (!order || order.status !== "pending") return;
 
-    // The order stays pending so the customer can retry with another card;
-    // the reservation is held until its normal expiry.
-    await tx
-      .update(orders)
-      .set({ status: "payment_failed" })
-      .where(eq(orders.id, order.id));
-
-    await releaseStock(tx, order.id);
+    // Deliberately does NOT change status or release stock.
+    //
+    // A declined card is not the end of the checkout — the customer is still
+    // on the page and Stripe lets them retry the SAME PaymentIntent with
+    // another card. Three things would break if we mutated here:
+    //
+    //   1. Releasing the reservation lets someone else take the last bottle
+    //      while the customer is typing a second card number.
+    //   2. markOrderPaid only transitions orders that are still `pending`,
+    //      so a successful retry on this PaymentIntent would find nothing to
+    //      mark paid — the customer gets charged and no order is recorded.
+    //   3. createPendingOrder only reuses orders that are `pending` with a
+    //      live reservation, so a retry would strand this order entirely.
+    //
+    // The reservation expires on its own 15-minute schedule, and the sweep in
+    // releaseExpiredReservations cancels the order then. That is the only
+    // path that should retire an unpaid order.
+    console.warn("[webhook] payment failed, order left pending for retry", {
+      orderId: order.id,
+      paymentIntentId,
+    });
   });
 }
 ```
