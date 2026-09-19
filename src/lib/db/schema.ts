@@ -175,19 +175,23 @@ export const orders = pgTable(
   ],
 );
 
-export const orderItems = pgTable("order_items", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orderId: uuid("order_id")
-    .notNull()
-    .references(() => orders.id, { onDelete: "cascade" }),
-  productId: uuid("product_id")
-    .notNull()
-    .references(() => products.id),
-  name: text("name").notNull(),
-  unitPriceCents: integer("unit_price_cents").notNull(),
-  quantity: integer("quantity").notNull(),
-  totalCents: integer("total_cents").notNull(),
-});
+export const orderItems = pgTable(
+  "order_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id),
+    name: text("name").notNull(),
+    unitPriceCents: integer("unit_price_cents").notNull(),
+    quantity: integer("quantity").notNull(),
+    totalCents: integer("total_cents").notNull(),
+  },
+  (t) => [index("order_items_order_id_idx").on(t.orderId)],
+);
 
 export const stripeEvents = pgTable("stripe_events", {
   id: text("id").primaryKey(),
