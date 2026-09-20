@@ -4951,6 +4951,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ received: true });
   } catch (error) {
     // Non-2xx makes Stripe retry, which the idempotency ledger makes safe.
+    //
+    // DO NOT narrow this catch or convert it to a 200. markOrderPaid throws
+    // StrandedPaymentError and OrderNotFoundForPaymentError precisely so they
+    // reach here and produce a non-2xx: throwing rolls back the stripe_events
+    // insert, so Stripe retries and eventually surfaces the event in its
+    // dashboard. Swallowing them returns 200 for a real charge that has no
+    // order behind it, and the money is then lost with nothing to reconcile.
     console.error("[webhook] handler failed", { type: event.type, error });
     return NextResponse.json({ error: "Handler failed" }, { status: 500 });
   }
