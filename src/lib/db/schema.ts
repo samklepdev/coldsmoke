@@ -218,6 +218,32 @@ export const stripeEvents = pgTable("stripe_events", {
     .defaultNow(),
 });
 
+/**
+ * Contact form submissions.
+ *
+ * Rows are written BEFORE the email is sent, so a Resend outage loses nothing
+ * and `delivered_at` records whether the send actually landed. The same rows
+ * are what the rate limiter counts, so persistence and limiting share one
+ * mechanism instead of two.
+ */
+export const contactMessages = pgTable(
+  "contact_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull(),
+    orderNumber: integer("order_number"),
+    message: text("message").notNull(),
+    // Hashed, never the raw address: rate limiting only needs equality, and a
+    // raw IP is personal data this store has no reason to retain.
+    ipHash: text("ip_hash").notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("contact_messages_rate_idx").on(t.ipHash, t.createdAt)],
+);
+
 export type Product = typeof products.$inferSelect;
 export type ProductImage = typeof productImages.$inferSelect;
 export type Order = typeof orders.$inferSelect;
