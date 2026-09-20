@@ -28,6 +28,22 @@ function internalHrefs(file: string): string[] {
     .filter((href) => !href.startsWith("//"));
 }
 
+/**
+ * Paths that reach the chrome through a JSX expression rather than a literal
+ * attribute -- `href={signedIn ? "/account/orders" : "/sign-in"}`.
+ *
+ * `internalHrefs` reads literal href="..." attributes only, so these are
+ * invisible to it. Listing them by hand is not ideal; leaving a link
+ * unchecked because it is written as a ternary is worse. The assertion below
+ * checks both that the route exists AND that the header still mentions the
+ * path, so deleting the link from the header fails here rather than silently
+ * shrinking what is covered.
+ */
+const EXPRESSION_HREFS: [string, string][] = [
+  ["src/components/SiteHeader.tsx", "/account/orders"],
+  ["src/components/SiteHeader.tsx", "/sign-in"],
+];
+
 /** Does a route exist for this path? Dynamic segments match any value. */
 function routeExists(href: string): boolean {
   const segments = href.split("/").filter(Boolean);
@@ -57,4 +73,13 @@ describe("site chrome links", () => {
   it.each(links)("%s links to %s, which exists", (_file, href) => {
     expect(routeExists(href)).toBe(true);
   });
+
+  it.each(EXPRESSION_HREFS)(
+    "%s links to %s from an expression, which exists",
+    (file, href) => {
+      const source = readFileSync(path.join(ROOT, file), "utf8");
+      expect(source, `${file} no longer mentions ${href}`).toContain(`"${href}"`);
+      expect(routeExists(href)).toBe(true);
+    },
+  );
 });

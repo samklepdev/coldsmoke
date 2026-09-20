@@ -9,6 +9,7 @@ import { grantOrderAccess } from "@/lib/orders/access";
 import { OutOfStockError } from "@/lib/inventory";
 import { PENDING_ORDER_COOKIE } from "@/lib/cookies";
 import { getActiveDiscount } from "../actions";
+import { getSessionUser } from "@/lib/auth/session";
 import type { Address } from "@/lib/db/schema";
 
 const addressSchema = z.object({
@@ -76,6 +77,10 @@ export async function startCheckoutAction(
 
   const discount = await getActiveDiscount();
 
+  // A signed-in buyer's order belongs to their account immediately. A guest's
+  // stays unattached until they verify the address.
+  const sessionUser = await getSessionUser();
+
   // Reuse any pending order from an earlier submit on this checkout, so
   // editing an address updates one reservation instead of stacking another.
   // A stale or already-paid id is safe: createPendingOrder verifies the order
@@ -88,6 +93,7 @@ export async function startCheckoutAction(
       cartLines: lines,
       cartId,
       email,
+      userId: sessionUser?.id ?? null,
       shippingAddress,
       discount,
       existingOrderId,

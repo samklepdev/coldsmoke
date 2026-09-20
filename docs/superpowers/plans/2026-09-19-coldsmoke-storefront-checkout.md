@@ -167,6 +167,8 @@ RESEND_API_KEY=re_xxx
 EMAIL_FROM="Coldsmoke <orders@wearcoldsmoke.com>"
 CRON_SECRET=generate_a_random_string
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
+BETTER_AUTH_SECRET=generate_with_openssl_rand_base64_32
+BETTER_AUTH_URL=http://localhost:3000
 ```
 
 - [ ] **Step 6: Write the failing test for the money helper**
@@ -401,7 +403,7 @@ import "dotenv/config";
 import { defineConfig } from "drizzle-kit";
 
 export default defineConfig({
-  schema: "./src/lib/db/schema.ts",
+  schema: ["./src/lib/db/schema.ts", "./src/lib/db/auth-schema.ts"],
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: { url: process.env.DATABASE_URL! },
@@ -427,6 +429,15 @@ import {
   index,
   check,
 } from "drizzle-orm/pg-core";
+
+/**
+ * Better Auth's tables live in a generated file so regenerating them cannot
+ * clobber hand-written tables. Re-exported here so `@/lib/db/schema` stays the
+ * single import for every table in the application.
+ */
+import { user, session, account, verification } from "./auth-schema";
+
+export { user, session, account, verification };
 
 export const orderStatus = pgEnum("order_status", [
   "pending",
@@ -659,7 +670,50 @@ export const contactMessages = pgTable(
   (t) => [index("contact_messages_rate_idx").on(t.ipHash, t.createdAt)],
 );
 
+/**
+ * Saved addresses for signed-in customers.
+ *
+ * Deliberately not referenced by orders. An order carries a jsonb snapshot of
+ * where it actually shipped, so editing or deleting a saved address cannot
+ * rewrite shipping history.
+ */
+export const addresses = pgTable(
+  "addresses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    label: text("label"),
+    name: text("name").notNull(),
+    line1: text("line1").notNull(),
+    line2: text("line2"),
+    city: text("city").notNull(),
+    state: text("state").notNull(),
+    postalCode: text("postal_code").notNull(),
+    country: text("country").notNull().default("US"),
+    phone: text("phone"),
+    isDefault: boolean("is_default").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("addresses_user_idx").on(t.userId),
+    // At most one default per customer, enforced by the database rather than
+    // by remembering to clear the old one. A partial unique index is the only
+    // version of this rule that a concurrent write cannot slip past.
+    uniqueIndex("addresses_one_default_idx")
+      .on(t.userId)
+      .where(sql`${t.isDefault}`),
+  ],
+);
+
 export type Product = typeof products.$inferSelect;
+export type SavedAddress = typeof addresses.$inferSelect;
 export type ProductImage = typeof productImages.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type OrderItem = typeof orderItems.$inferSelect;
@@ -1685,7 +1739,7 @@ export async function testDb() {
       await client`
         TRUNCATE order_items, orders, cart_items, carts, inventory_adjustments,
                  inventory, product_images, products, discount_codes, stripe_events,
-                 contact_messages
+                 contact_messages, addresses, session, account, verification, "user"
         RESTART IDENTITY CASCADE`;
     },
     async close() {
@@ -2436,8 +2490,8 @@ export async function getCartId(): Promise<string | null> {
 
 /**
  * Resolves the caller's cart, creating one if needed. Guest carts are
- * identified by a uuid in an httpOnly cookie; Plan 2 attaches userId on
- * sign-in and merges.
+ * identified by a uuid in an httpOnly cookie; `mergeGuestCart` in ./merge
+ * attaches userId and folds a guest cart into the customer's on sign-in.
  *
  * WRITES A COOKIE — callable only from a Server Action or Route Handler.
  * Server Components must use getCartId() instead.
@@ -3108,6 +3162,9 @@ export async function createPendingOrder(args: {
   cartLines: QuoteLine[];
   cartId?: string | null;
   email: string;
+  /** Set when the buyer is signed in. Guest orders stay null and are claimed
+   *  later by @/lib/orders/claim when the address is verified. */
+  userId?: string | null;
   shippingAddress: Address;
   billingAddress?: Address | null;
   discount?: AppliedDiscount | null;
@@ -3133,6 +3190,7 @@ export async function createPendingOrder(args: {
 
   const money = {
     email,
+    userId: args.userId ?? null,
     cartId: args.cartId ?? null,
     discountCodeId: discount?.id ?? null,
     subtotalCents: final.subtotalCents,
@@ -4163,7 +4221,13 @@ import Link from "next/link";
 import { Wordmark } from "./ui/Wordmark";
 import styles from "./SiteHeader.module.css";
 
-export function SiteHeader({ cartCount = 0 }: { cartCount?: number }) {
+export function SiteHeader({
+  cartCount = 0,
+  signedIn = false,
+}: {
+  cartCount?: number;
+  signedIn?: boolean;
+}) {
   return (
     <header className={styles.header}>
       <Link href="/" aria-label="Coldsmoke home">
@@ -4174,6 +4238,9 @@ export function SiteHeader({ cartCount = 0 }: { cartCount?: number }) {
         <Link href="/shop">Shop</Link>
         <Link href="/the-scent">The Scent</Link>
         <Link href="/about">About</Link>
+        <Link href={signedIn ? "/account/orders" : "/sign-in"}>
+          {signedIn ? "Account" : "Sign in"}
+        </Link>
       </nav>
 
       <Link href="/cart" className={styles.cart}>
@@ -4251,16 +4318,18 @@ Create `src/app/(store)/layout.tsx`:
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
 import { getCartId, getCartLines } from "@/lib/cart";
+import { getSessionUser } from "@/lib/auth/session";
 
 export default async function StoreLayout({ children }: LayoutProps<"/">) {
   // Read-only: a layout renders as a Server Component and may not set cookies.
   const cartId = await getCartId();
   const lines = cartId ? await getCartLines(cartId) : [];
   const count = lines.reduce((sum, line) => sum + line.quantity, 0);
+  const user = await getSessionUser();
 
   return (
     <>
-      <SiteHeader cartCount={count} />
+      <SiteHeader cartCount={count} signedIn={user !== null} />
       <main>{children}</main>
       <SiteFooter />
     </>
@@ -5385,6 +5454,7 @@ import { grantOrderAccess } from "@/lib/orders/access";
 import { OutOfStockError } from "@/lib/inventory";
 import { PENDING_ORDER_COOKIE } from "@/lib/cookies";
 import { getActiveDiscount } from "../actions";
+import { getSessionUser } from "@/lib/auth/session";
 import type { Address } from "@/lib/db/schema";
 
 const addressSchema = z.object({
@@ -5452,6 +5522,10 @@ export async function startCheckoutAction(
 
   const discount = await getActiveDiscount();
 
+  // A signed-in buyer's order belongs to their account immediately. A guest's
+  // stays unattached until they verify the address.
+  const sessionUser = await getSessionUser();
+
   // Reuse any pending order from an earlier submit on this checkout, so
   // editing an address updates one reservation instead of stacking another.
   // A stale or already-paid id is safe: createPendingOrder verifies the order
@@ -5464,6 +5538,7 @@ export async function startCheckoutAction(
       cartLines: lines,
       cartId,
       email,
+      userId: sessionUser?.id ?? null,
       shippingAddress,
       discount,
       existingOrderId,

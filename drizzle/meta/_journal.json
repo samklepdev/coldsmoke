@@ -43,6 +43,20 @@
       "when": 1789931832033,
       "tag": "0005_acoustic_doctor_faustus",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789936126240,
+      "tag": "0006_mysterious_ultron",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789938858319,
+      "tag": "0007_broad_expediter",
+      "breakpoints": true
     }
   ]
 }
