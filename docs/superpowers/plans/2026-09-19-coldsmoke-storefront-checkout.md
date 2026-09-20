@@ -4995,12 +4995,13 @@ Create `src/app/(store)/cart/page.tsx`:
 
 ```tsx
 import type { Metadata } from "next";
-import { getCartId, getCartLines, MAX_LINE_QUANTITY } from "@/lib/cart";
+import { getCartId, getCartLines } from "@/lib/cart";
 import { quote, FREE_SHIPPING_THRESHOLD_CENTS } from "@/lib/pricing/quote";
 import { formatCents } from "@/lib/money";
-import { Button, ButtonLink } from "@/components/ui/Button";
-import { setQuantityAction, getActiveDiscount } from "../actions";
+import { ButtonLink } from "@/components/ui/Button";
+import { getActiveDiscount } from "../actions";
 import { DiscountForm } from "./DiscountForm";
+import { QuantityStepper } from "./QuantityStepper";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = { title: "Cart" };
@@ -5043,34 +5044,11 @@ export default async function CartPage() {
             </div>
           </div>
 
-          <form action={setQuantityAction} className={styles.qtyForm}>
-            <input type="hidden" name="productId" value={line.productId} />
-            <label className="sr-only" htmlFor={`qty-${line.productId}`}>
-              Quantity of {line.name}
-            </label>
-            {/*
-              `required` matters more than it looks. The server rejects an
-              unparseable quantity by re-rendering rather than deleting the
-              line, which is correct but silent — a cleared box submitted
-              happily and the customer saw no change and no reason why.
-              Constraint validation now refuses blank input the same way it
-              already refuses 2.5, -1 and anything over the cap.
-            */}
-            <input
-              id={`qty-${line.productId}`}
-              className={styles.qty}
-              type="number"
-              name="quantity"
-              defaultValue={line.quantity}
-              min={0}
-              max={MAX_LINE_QUANTITY}
-              step={1}
-              required
-            />
-            <Button type="submit" variant="quiet">
-              Update
-            </Button>
-          </form>
+          <QuantityStepper
+            productId={line.productId}
+            name={line.name}
+            quantity={line.quantity}
+          />
 
           <div>{formatCents(line.unitPriceCents * line.quantity)}</div>
         </div>
