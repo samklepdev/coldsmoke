@@ -226,7 +226,11 @@ export async function markOrderPaid(
       throw new OrderNotFoundForPaymentError(paymentIntentId);
     }
 
-    if (existing.status === "paid") {
+    // "fulfilled" is downstream of "paid": the order was paid and has since
+    // shipped. A late or replayed succeeded-event for it is still a no-op, not
+    // a stranded payment. Nothing sets "fulfilled" until the admin plan ships,
+    // but treating it as stranded then would throw and retry forever.
+    if (existing.status === "paid" || existing.status === "fulfilled") {
       // Another event already did the work — idempotent no-op.
       return null;
     }

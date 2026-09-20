@@ -73,6 +73,35 @@ export async function getProductBySlug(
   };
 }
 
+/**
+ * Availability-aware lookup by id. Used by checkout to report exactly how many
+ * of a product remain when a reservation fails, so the customer is told which
+ * line to fix rather than a generic "something sold out".
+ */
+export async function getCatalogProductById(
+  id: string,
+): Promise<CatalogProduct | null> {
+  const [row] = await db
+    .select({
+      product: products,
+      available: sql<number>`GREATEST(${inventory.onHand} - ${inventory.reserved}, 0)`,
+    })
+    .from(products)
+    .leftJoin(inventory, eq(inventory.productId, products.id))
+    .where(eq(products.id, id))
+    .limit(1);
+
+  if (!row) return null;
+
+  const images = await db
+    .select()
+    .from(productImages)
+    .where(eq(productImages.productId, row.product.id))
+    .orderBy(asc(productImages.sortOrder));
+
+  return { ...row.product, available: Number(row.available ?? 0), images };
+}
+
 /** Used to resolve live prices for cart lines. */
 export async function getProductsByIds(ids: string[]): Promise<Product[]> {
   if (ids.length === 0) return [];
