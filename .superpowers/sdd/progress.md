@@ -293,3 +293,50 @@ STILL OPEN for the owner:
      availability SQL across two call sites (Task 5); Wordmark's redundant
      aria-label (Task 11); --line-bright on --panel at 3.13:1, only 0.13 over
      the floor (Task 11).
+
+## Post-completion: propagating fixes back into the plan (2026-09-20)
+
+Caught a process failure of my own. Tasks 3, 4, 9 and 11 each patched the plan
+after a review found a defect in it ("Plan file patched to match so a re-run
+does not reproduce the bug"). I fixed five defects across Tasks 12-18 and
+patched NONE of them back. The plan still contained every one.
+
+Propagated all five into the plan and the task briefs:
+  1. Number.isFinite quantity guard -> parseQuantity (plan + task-12-brief),
+     plus MAX_LINE_QUANTITY in the cart module (plan + task-7-brief) and the
+     product page's max attribute.
+  2. z.string().length(2) -> letters-only regex + uppercase transform
+     (plan + task-14-brief).
+  3. Cron `Bearer ${process.env.CRON_SECRET}` -> fail-closed + timingSafeEqual
+     (plan + task-15-brief).
+  4. Inline post-payment side effects -> completePaidOrder, isolated from the
+     outer catch (plan + task-15-brief).
+  5. createPendingOrder returning the pre-update row -> .returning()
+     (plan + task-9-brief; the first sweep missed the brief, the verification
+     step caught it).
+  6. Typed jsonb addresses .$type<Address>() (plan + task-2-brief).
+
+Verified by extracting the plan's code blocks and diffing against the shipped
+source, not by eyeballing: src/app/api/stripe/webhook/route.ts and
+src/app/api/cron/release-reservations/route.ts are now byte-identical to the
+plan. All five defect patterns are absent from the plan and every task brief.
+
+Also fixed: the plan told the implementer to create src/lib/email/index.ts,
+but Task 10's accepted deviation renamed it to .tsx (resend's `react` field
+wants a ReactElement, so the file contains JSX). Plan and task-10-brief now
+say .tsx with the reason inline, and use the JSX call form.
+
+### Systemic finding — plan drift is wider than these five
+
+Diffing every "Create `path`" block in the plan against the repo:
+  35 files byte-identical, 31 files differ, 0 files missing.
+
+The 31 are accumulated accepted deviations and review fixes from Tasks 1-11
+plus my own from 12-18, none propagated. Biggest gaps: orders/index.ts (~63
+changed lines), payments/stripe.ts (~51), inventory tests (~96),
+CheckoutForm.tsx (~105), e2e/checkout.spec.ts (~85). The plan is a reliable
+guide to 35 files and an actively misleading one for 31.
+
+NOT fixed — the script to re-check this lives at scratchpad/plan_drift.py and
+is cheap to re-run. Deciding whether the plan should be a living document or
+a historical artefact is the owner's call.

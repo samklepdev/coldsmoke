@@ -562,8 +562,10 @@ export const orders = pgTable(
     totalCents: integer("total_cents").notNull(),
     refundedCents: integer("refunded_cents").notNull().default(0),
 
-    shippingAddress: jsonb("shipping_address").notNull(),
-    billingAddress: jsonb("billing_address"),
+    // .$type is type-only — no migration. Without it every read casts
+    // `as Address` with nothing checking the shape.
+    shippingAddress: jsonb("shipping_address").$type<Address>().notNull(),
+    billingAddress: jsonb("billing_address").$type<Address>(),
 
     carrier: text("carrier"),
     trackingNumber: text("tracking_number"),
@@ -2128,6 +2130,13 @@ export const CART_COOKIE = "cs_cart";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 /**
+ * Per-line ceiling shared by the quantity inputs and the actions that write
+ * them. cart_items.quantity is int4 with no CHECK constraint, so an unbounded
+ * value would eventually overflow on the `quantity + n` upsert in addItem.
+ */
+export const MAX_LINE_QUANTITY = 99;
+
+/**
  * Reads the caller's cart id without creating one. Safe to call while
  * rendering a Server Component.
  *
@@ -2800,12 +2809,16 @@ export async function createPendingOrder(args: {
     orderNumber: order.orderNumber,
   });
 
-  await db
+  // Return the row as it stands AFTER the payment intent id is written.
+  // Returning the pre-update `order` would hand the caller a row whose
+  // stripePaymentIntentId is always null while the stored row has it set.
+  const [withIntent] = await db
     .update(orders)
     .set({ stripePaymentIntentId: intent.paymentIntentId })
-    .where(eq(orders.id, order.id));
+    .where(eq(orders.id, order.id))
+    .returning();
 
-  return { order, clientSecret: intent.clientSecret };
+  return { order: withIntent, clientSecret: intent.clientSecret };
 }
 
 /**
@@ -3109,7 +3122,7 @@ git commit -m "feat: order creation, pending-order reuse, and idempotent paid tr
 ## Task 10: Transactional email
 
 **Files:**
-- Create: `src/lib/email/client.ts`, `src/lib/email/OrderConfirmation.tsx`, `src/lib/email/index.ts`
+- Create: `src/lib/email/client.ts`, `src/lib/email/OrderConfirmation.tsx`, `src/lib/email/index.tsx`
 
 **Interfaces:**
 - Consumes: `OrderWithItems` from `@/lib/orders`, `formatCents` from `@/lib/money`
@@ -3252,7 +3265,8 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
 
 - [ ] **Step 3: Implement the send function**
 
-Create `src/lib/email/index.ts`:
+Create `src/lib/email/index.tsx` (**.tsx, not .ts** — resend's types for
+the `react` field expect a `ReactElement`, so this file contains JSX):
 
 ```ts
 import { getResend, EMAIL_FROM } from "./client";
@@ -3272,7 +3286,7 @@ export async function sendOrderConfirmation(
       from: EMAIL_FROM,
       to: order.email,
       subject: `Coldsmoke order ${formatOrderNumber(order.orderNumber)}`,
-      react: OrderConfirmation({ order }),
+      react: <OrderConfirmation order={order} />,
     });
   } catch (error) {
     console.error("[email] order confirmation failed", {
@@ -3732,16 +3746,42 @@ Create `src/app/(store)/actions.ts`:
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { getOrCreateCartId, addItem, setQuantity } from "@/lib/cart";
+import {
+  getOrCreateCartId,
+  addItem,
+  setQuantity,
+  MAX_LINE_QUANTITY,
+} from "@/lib/cart";
+
+/**
+ * Form values are strings and can be anything a client chooses to send. An
+ * empty input yields Number("") === 0, and addItem/setQuantity throw on values
+ * that are not integers in range — which would escape a Server Action as an
+ * unhandled error. Coerce here and let the caller decide the fallback.
+ */
+function parseQuantity(raw: FormDataEntryValue | null, min: number): number | null {
+  if (typeof raw !== "string") return null;
+
+  // Number("") and Number("  ") are both 0. Without this guard a blank box
+  // would parse as an explicit zero, which on the cart page means "remove this
+  // line" — a cleared field must not silently delete anything.
+  if (raw.trim() === "") return null;
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed)) return null;
+  if (parsed < min || parsed > MAX_LINE_QUANTITY) return null;
+  return parsed;
+}
 
 export async function addToCartAction(formData: FormData): Promise<void> {
   const productId = String(formData.get("productId") ?? "");
-  const quantity = Number(formData.get("quantity") ?? 1);
+  // A missing or malformed quantity means "one of these, please".
+  const quantity = parseQuantity(formData.get("quantity"), 1) ?? 1;
 
   if (!productId) throw new Error("Missing productId");
 
   const cartId = await getOrCreateCartId();
-  await addItem(cartId, productId, Number.isFinite(quantity) ? quantity : 1);
+  await addItem(cartId, productId, quantity);
 
   revalidatePath("/cart");
   redirect("/cart");
@@ -3749,7 +3789,15 @@ export async function addToCartAction(formData: FormData): Promise<void> {
 
 export async function setQuantityAction(formData: FormData): Promise<void> {
   const productId = String(formData.get("productId") ?? "");
-  const quantity = Number(formData.get("quantity") ?? 0);
+  // 0 is meaningful here — it removes the line.
+  const quantity = parseQuantity(formData.get("quantity"), 0);
+
+  // Garbage in the box shouldn't silently delete the line; re-render instead,
+  // which restores the stored quantity.
+  if (quantity === null) {
+    revalidatePath("/cart");
+    return;
+  }
 
   const cartId = await getOrCreateCartId();
   await setQuantity(cartId, productId, quantity);
@@ -4063,6 +4111,7 @@ Create `src/app/(store)/product/[slug]/page.tsx`:
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { getProductBySlug } from "@/lib/catalog";
+import { MAX_LINE_QUANTITY } from "@/lib/cart";
 import { Wordmark } from "@/components/ui/Wordmark";
 import { Button } from "@/components/ui/Button";
 import { Price } from "@/components/ui/Price";
@@ -4112,7 +4161,7 @@ export default async function ProductPage({
             name="quantity"
             defaultValue={1}
             min={1}
-            max={Math.max(product.available, 1)}
+            max={Math.min(Math.max(product.available, 1), MAX_LINE_QUANTITY)}
             disabled={soldOut}
           />
           <Button type="submit" variant="primary" disabled={soldOut}>
@@ -4566,7 +4615,13 @@ const addressSchema = z.object({
   line1: z.string().min(1, "Enter a street address."),
   line2: z.string().optional(),
   city: z.string().min(1, "Enter a city."),
-  state: z.string().length(2, "Use a two-letter state code."),
+  // Letters only, and normalised: Stripe Tax expects a canonical state code,
+  // and a plain length check would accept "12" or pass "tx" through as typed.
+  state: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z]{2}$/, "Use a two-letter state code.")
+    .transform((value) => value.toUpperCase()),
   postalCode: z.string().regex(/^\d{5}(-\d{4})?$/, "Enter a valid ZIP code."),
 });
 
@@ -4928,16 +4983,7 @@ export async function POST(request: Request) {
         // markOrderPaid owns idempotency via the stripe_events ledger; null
         // means this event was already processed.
         const order = await markOrderPaid(event.paymentIntentId, event.id);
-        if (order) {
-          // Empty the cart that produced this order. The webhook is the only
-          // authoritative "payment succeeded" signal — clearing client-side
-          // after confirmPayment would leave a full cart behind whenever the
-          // customer closes the tab, letting them re-purchase by accident.
-          if (order.cartId) await clearCart(order.cartId);
-
-          const full = await findOrderById(order.id);
-          if (full) await sendOrderConfirmation(full);
-        }
+        if (order) await completePaidOrder(order.id, order.cartId);
         break;
       }
 
@@ -4963,6 +5009,41 @@ export async function POST(request: Request) {
     // order behind it, and the money is then lost with nothing to reconcile.
     console.error("[webhook] handler failed", { type: event.type, error });
     return NextResponse.json({ error: "Handler failed" }, { status: 500 });
+  }
+}
+
+/**
+ * Side effects that run after the payment has already been committed.
+ *
+ * These are deliberately isolated from the caller's catch. By the time we get
+ * here markOrderPaid's transaction has COMMITTED: the order is paid, the stock
+ * is committed, and the event id is durably in the ledger. Letting a failure
+ * here escape would return 500 for a payment that actually succeeded, and the
+ * retry Stripe then sends is a no-op — markOrderPaid sees the event already
+ * processed and returns null — so the side effects never run anyway and the
+ * only lasting result is a permanently failing event in the dashboard.
+ *
+ * Both effects are recoverable by other means: a stale cart is corrected on
+ * the customer's next visit, and a missing confirmation email can be resent.
+ */
+async function completePaidOrder(
+  orderId: string,
+  cartId: string | null,
+): Promise<void> {
+  try {
+    // Empty the cart that produced this order. The webhook is the only
+    // authoritative "payment succeeded" signal — clearing client-side after
+    // confirmPayment would leave a full cart behind whenever the customer
+    // closes the tab, letting them re-purchase by accident.
+    if (cartId) await clearCart(cartId);
+
+    const full = await findOrderById(orderId);
+    if (full) await sendOrderConfirmation(full);
+  } catch (error) {
+    console.error("[webhook] post-payment side effects failed", {
+      orderId,
+      error,
+    });
   }
 }
 
@@ -5014,12 +5095,32 @@ async function handleFailure(eventId: string, paymentIntentId: string) {
 Create `src/app/api/cron/release-reservations/route.ts`:
 
 ```ts
+import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { releaseExpiredReservations } from "@/lib/inventory";
 
+function isAuthorized(header: string | null): boolean {
+  const secret = process.env.CRON_SECRET;
+
+  // Fail closed. Without this the comparison below would be against the
+  // literal string "Bearer undefined", which anyone could send.
+  if (!secret) {
+    console.error("[cron] CRON_SECRET is not set; refusing to run");
+    return false;
+  }
+
+  if (!header) return false;
+
+  const expected = Buffer.from(`Bearer ${secret}`);
+  const actual = Buffer.from(header);
+  // timingSafeEqual throws on a length mismatch, so check that first — the
+  // length of the secret is not itself worth protecting.
+  if (expected.length !== actual.length) return false;
+  return timingSafeEqual(expected, actual);
+}
+
 export async function GET(request: Request) {
-  const auth = request.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorized(request.headers.get("authorization"))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
