@@ -13,6 +13,13 @@ import {
   check,
 } from "drizzle-orm/pg-core";
 
+/**
+ * Better Auth's tables live in a generated file so regenerating them cannot
+ * clobber hand-written tables. Re-exported here so `@/lib/db/schema` stays the
+ * single import for every table in the application.
+ */
+export { user, session, account, verification } from "./auth-schema";
+
 export const orderStatus = pgEnum("order_status", [
   "pending",
   "paid",

@@ -167,6 +167,8 @@ RESEND_API_KEY=re_xxx
 EMAIL_FROM="Coldsmoke <orders@wearcoldsmoke.com>"
 CRON_SECRET=generate_a_random_string
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
+BETTER_AUTH_SECRET=generate_with_openssl_rand_base64_32
+BETTER_AUTH_URL=http://localhost:3000
 ```
 
 - [ ] **Step 6: Write the failing test for the money helper**
@@ -401,7 +403,7 @@ import "dotenv/config";
 import { defineConfig } from "drizzle-kit";
 
 export default defineConfig({
-  schema: "./src/lib/db/schema.ts",
+  schema: ["./src/lib/db/schema.ts", "./src/lib/db/auth-schema.ts"],
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: { url: process.env.DATABASE_URL! },
@@ -427,6 +429,13 @@ import {
   index,
   check,
 } from "drizzle-orm/pg-core";
+
+/**
+ * Better Auth's tables live in a generated file so regenerating them cannot
+ * clobber hand-written tables. Re-exported here so `@/lib/db/schema` stays the
+ * single import for every table in the application.
+ */
+export { user, session, account, verification } from "./auth-schema";
 
 export const orderStatus = pgEnum("order_status", [
   "pending",
@@ -1685,7 +1694,7 @@ export async function testDb() {
       await client`
         TRUNCATE order_items, orders, cart_items, carts, inventory_adjustments,
                  inventory, product_images, products, discount_codes, stripe_events,
-                 contact_messages
+                 contact_messages, session, account, verification, "user"
         RESTART IDENTITY CASCADE`;
     },
     async close() {

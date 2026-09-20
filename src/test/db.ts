@@ -22,7 +22,7 @@ export async function testDb() {
       await client`
         TRUNCATE order_items, orders, cart_items, carts, inventory_adjustments,
                  inventory, product_images, products, discount_codes, stripe_events,
-                 contact_messages
+                 contact_messages, session, account, verification, "user"
         RESTART IDENTITY CASCADE`;
     },
     async close() {
