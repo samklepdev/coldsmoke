@@ -4,16 +4,24 @@
 
 **Goal:** Replace the cart page's number input and "Update" button with a −/＋ stepper that applies each change immediately.
 
-**Architecture:** One new Client Component renders the per-line controls as submit buttons carrying their target quantity, so the form still works without JavaScript. `useOptimistic` moves the displayed count instantly; every money figure continues to come from `quote()` on the server after `revalidatePath`. The Server Action is untouched.
+**Architecture:** One new Client Component renders the per-line controls as submit buttons carrying their target quantity, so the form still works without JavaScript. The Server Action is passed to `action` directly and `useFormStatus` reads the in-flight `FormData` to move the displayed count instantly; every money figure continues to come from `quote()` on the server after `revalidatePath`. The Server Action is untouched.
 
-**Tech Stack:** Next.js 16 (App Router, Server Actions), React 19 (`useOptimistic`), CSS Modules, Vitest, Playwright.
+> **Corrected 2026-09-20 during Task 6.** This plan originally specified
+> `useOptimistic` behind a client `async function submit(formData)` passed to
+> `action`. That is React's own documented `useOptimistic` example, and it does
+> not degrade: Next only emits the native form POST when it can see a Server
+> Action in `action`, so with JavaScript disabled `+` did nothing at all.
+> Measured in a JS-disabled browser, not reasoned about. `useFormStatus` gives
+> the same optimistic count with the Server Action left in place.
+
+**Tech Stack:** Next.js 16 (App Router, Server Actions), React 19 (`useFormStatus`), CSS Modules, Vitest, Playwright.
 
 Spec: `docs/superpowers/specs/2026-09-20-cart-quantity-stepper-design.md`
 
 ## Global Constraints
 
 - Money is computed **only** in `src/lib/pricing/quote.ts`. No price arithmetic in any client component. Optimism covers the integer count and nothing else.
-- The cart must remain usable with JavaScript disabled. Controls are `<button type="submit">` inside a form posting to a Server Action — never `onClick`-only handlers.
+- The cart must remain usable with JavaScript disabled. Controls are `<button type="submit">` inside a form posting to a Server Action — never `onClick`-only handlers. `<form action={...}>` must receive the Server Action **itself**, not a client function that awaits it: wrapping it is as fatal to the no-JS path as an `onClick`, and looks identical in a browser with JavaScript on. Verify this claim by turning JavaScript off, never by reading the markup.
 - `MAX_LINE_QUANTITY` (99) is imported from **`@/lib/cart/limits`**, never from `@/lib/cart`, and never hardcoded. `@/lib/cart` pulls in `next/headers` and the Postgres client; importing it from a Client Component drags `fs`/`net`/`tls` and the DB driver into the browser bundle and the build fails with *"Module not found: Can't resolve 'fs'"*. Task 1 creates that module. This was verified by building it and watching it break, not assumed.
 - Control borders use `--line-bright`, not `--line`. `--line` is 1.70:1 on `--panel` and fails WCAG 1.4.11; `--line-bright` is 3.13:1 and passes.
 - `setQuantityAction(formData: FormData): Promise<void>` in `src/app/(store)/actions.ts` is **not** modified by this plan.
@@ -211,7 +219,7 @@ Create `src/app/(store)/cart/QuantityStepper.tsx`:
 ```tsx
 "use client";
 
-import { useOptimistic } from "react";
+import { useFormStatus } from "react-dom";
 import { MAX_LINE_QUANTITY } from "@/lib/cart/limits";
 import { setQuantityAction } from "../actions";
 import styles from "./page.module.css";
@@ -223,6 +231,14 @@ import styles from "./page.module.css";
  * the form still works with JavaScript disabled — the rest of the store is
  * built on Server Components and form actions, and this should not be the one
  * control that silently does nothing without JS.
+ *
+ * `setQuantityAction` is passed to `action` DIRECTLY rather than wrapped in a
+ * client function. Next only emits the native form POST (method, URL, hidden
+ * action id) when it can see a Server Action here; wrapping it in a local
+ * async function to drive `useOptimistic` — which is what React's own
+ * useOptimistic example does — leaves a form that submits nowhere without
+ * JavaScript. That was measured with a JS-disabled browser, not assumed: `+`
+ * did nothing at all.
  *
  * Optimism stops at the integer count. Line totals and the cart summary come
  * from quote() on the server, because a second money implementation on the
@@ -237,52 +253,61 @@ export function QuantityStepper({
   name: string;
   quantity: number;
 }) {
-  const [optimisticQuantity, setOptimisticQuantity] = useOptimistic(quantity);
+  return (
+    <form action={setQuantityAction} className={styles.qtyForm}>
+      <input type="hidden" name="productId" value={productId} />
+      <StepperControls name={name} quantity={quantity} />
+    </form>
+  );
+}
 
-  // While an update is in flight the optimistic count is ahead of the prop;
-  // once the server responds and the page re-renders they agree again.
-  //
-  // Do NOT use useTransition's isPending here. A form action already runs in a
-  // transition, so the hook's flag reads false on every render — measured, not
-  // assumed — and the dimming would never appear.
-  const isPending = optimisticQuantity !== quantity;
+/**
+ * Split out because `useFormStatus` only reports on a form it is rendered
+ * inside — called in the component that owns the <form> it would always read
+ * idle.
+ */
+function StepperControls({
+  name,
+  quantity,
+}: {
+  name: string;
+  quantity: number;
+}) {
+  const { pending, data } = useFormStatus();
 
-  async function submit(formData: FormData) {
-    // The clicked button supplies the target quantity. A form action is
-    // already a transition, so the optimistic update needs no extra wrapping.
-    const next = Number(formData.get("quantity"));
-    if (Number.isInteger(next)) setOptimisticQuantity(next);
-    await setQuantityAction(formData);
-  }
+  // The in-flight FormData carries the clicked button's value, so the count
+  // can move the instant a button is pressed without a second source of truth.
+  // Once the server responds the form goes idle and `quantity` — the freshly
+  // revalidated prop — takes over again.
+  const submitted = pending ? Number(data?.get("quantity")) : Number.NaN;
+  const shown = Number.isInteger(submitted) ? submitted : quantity;
 
   return (
-    <form action={submit} className={styles.qtyForm}>
-      <input type="hidden" name="productId" value={productId} />
-
-      <div className={`${styles.stepper} ${isPending ? styles.pending : ""}`}>
+    <>
+      <div className={`${styles.stepper} ${pending ? styles.pending : ""}`}>
         <button
           type="submit"
           name="quantity"
-          value={quantity - 1}
+          value={shown - 1}
           className={styles.stepButton}
           // Stops a fast decrement run from deleting the line. Removal is a
           // separate, deliberate control.
-          disabled={quantity <= 1}
+          disabled={shown <= 1}
           aria-label={`One fewer ${name}`}
         >
           −
         </button>
 
         <span className={styles.count} aria-live="polite">
-          {optimisticQuantity}
+          {shown}
         </span>
 
         <button
           type="submit"
           name="quantity"
-          value={quantity + 1}
+          value={shown + 1}
           className={styles.stepButton}
-          disabled={quantity >= MAX_LINE_QUANTITY}
+          disabled={shown >= MAX_LINE_QUANTITY}
           aria-label={`One more ${name}`}
         >
           +
@@ -298,7 +323,7 @@ export function QuantityStepper({
       >
         Remove
       </button>
-    </form>
+    </>
   );
 }
 ```
@@ -623,10 +648,10 @@ git commit -m "docs: record the cart stepper's no-JS verification"
 
 ## Self-Review
 
-**Spec coverage.** §3 component boundary → Tasks 2–3. §3 no-JS markup → Task 2 Step 2, verified in Task 6. §3 data flow and the money rule → Task 2 Step 2 plus Global Constraints. §4 bounds and removal → Task 2 Step 2 (`disabled` on both buttons, separate Remove), tested in Task 4. §5 error handling → the optimistic value reverting is inherent to `useOptimistic` re-rendering from the new prop; rapid clicking is covered by `startTransition`. §6 accessibility → `aria-label`s and `aria-live` in Task 2, asserted by name in Task 4. §7 testing → Task 4. §8 plan drift → Task 5. §9 success criteria → Task 5 Step 4 and Task 6.
+**Spec coverage.** §3 component boundary → Tasks 2–3. §3 no-JS markup → Task 2 Step 2, verified in Task 6. §3 data flow and the money rule → Task 2 Step 2 plus Global Constraints. §4 bounds and removal → Task 2 Step 2 (`disabled` on both buttons, separate Remove), tested in Task 4. §5 error handling → the optimistic count reverting is inherent to `useFormStatus` going idle and the re-rendered `quantity` prop taking over; rapid clicking re-submits from the displayed count. §6 accessibility → `aria-label`s and `aria-live` in Task 2, asserted by name in Task 4. §7 testing → Task 4. §8 plan drift → Task 5. §9 success criteria → Task 5 Step 4 and Task 6.
 
 **Deliberately not covered:** stock availability in the stepper, typing an exact quantity, and undo-after-removal are all out of scope per spec §2 and have no tasks.
 
 **Type consistency.** `QuantityStepper` takes `{ productId: string; name: string; quantity: number }` in Task 2 and is called with exactly those three props in Task 3. `setQuantityAction(formData: FormData)` is used unchanged. `MAX_LINE_QUANTITY` is imported, never inlined.
 
-**Known risk for the implementer.** `useOptimistic` must be called inside a component that re-renders with a fresh `quantity` prop, which it does because the cart page is a dynamic Server Component and `setQuantityAction` calls `revalidatePath("/cart")`. If the count appears to stick at its optimistic value after the server responds, the cause is a missing revalidate, not the hook.
+**Known risk for the implementer.** `useFormStatus` only reports on a form it is rendered *inside*, so the controls must be a child component of the one that owns the `<form>` — called in the owner it always reads idle and the count never moves. Recovery of the true count then depends on the page re-rendering with a fresh `quantity` prop, which it does because the cart page is a dynamic Server Component and `setQuantityAction` calls `revalidatePath("/cart")`. If the count sticks at its optimistic value after the server responds, the cause is a missing revalidate, not the hook.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useOptimistic } from "react";
+import { useFormStatus } from "react-dom";
 import { MAX_LINE_QUANTITY } from "@/lib/cart/limits";
 import { setQuantityAction } from "../actions";
 import styles from "./page.module.css";
@@ -12,6 +12,14 @@ import styles from "./page.module.css";
  * the form still works with JavaScript disabled — the rest of the store is
  * built on Server Components and form actions, and this should not be the one
  * control that silently does nothing without JS.
+ *
+ * `setQuantityAction` is passed to `action` DIRECTLY rather than wrapped in a
+ * client function. Next only emits the native form POST (method, URL, hidden
+ * action id) when it can see a Server Action here; wrapping it in a local
+ * async function to drive `useOptimistic` — which is what React's own
+ * useOptimistic example does — leaves a form that submits nowhere without
+ * JavaScript. That was measured with a JS-disabled browser, not assumed: `+`
+ * did nothing at all.
  *
  * Optimism stops at the integer count. Line totals and the cart summary come
  * from quote() on the server, because a second money implementation on the
@@ -26,52 +34,61 @@ export function QuantityStepper({
   name: string;
   quantity: number;
 }) {
-  const [optimisticQuantity, setOptimisticQuantity] = useOptimistic(quantity);
+  return (
+    <form action={setQuantityAction} className={styles.qtyForm}>
+      <input type="hidden" name="productId" value={productId} />
+      <StepperControls name={name} quantity={quantity} />
+    </form>
+  );
+}
 
-  // While an update is in flight the optimistic count is ahead of the prop;
-  // once the server responds and the page re-renders they agree again.
-  //
-  // Do NOT use useTransition's isPending here. A form action already runs in a
-  // transition, so the hook's flag reads false on every render — measured, not
-  // assumed — and the dimming would never appear.
-  const isPending = optimisticQuantity !== quantity;
+/**
+ * Split out because `useFormStatus` only reports on a form it is rendered
+ * inside — called in the component that owns the <form> it would always read
+ * idle.
+ */
+function StepperControls({
+  name,
+  quantity,
+}: {
+  name: string;
+  quantity: number;
+}) {
+  const { pending, data } = useFormStatus();
 
-  async function submit(formData: FormData) {
-    // The clicked button supplies the target quantity. A form action is
-    // already a transition, so the optimistic update needs no extra wrapping.
-    const next = Number(formData.get("quantity"));
-    if (Number.isInteger(next)) setOptimisticQuantity(next);
-    await setQuantityAction(formData);
-  }
+  // The in-flight FormData carries the clicked button's value, so the count
+  // can move the instant a button is pressed without a second source of truth.
+  // Once the server responds the form goes idle and `quantity` — the freshly
+  // revalidated prop — takes over again.
+  const submitted = pending ? Number(data?.get("quantity")) : Number.NaN;
+  const shown = Number.isInteger(submitted) ? submitted : quantity;
 
   return (
-    <form action={submit} className={styles.qtyForm}>
-      <input type="hidden" name="productId" value={productId} />
-
-      <div className={`${styles.stepper} ${isPending ? styles.pending : ""}`}>
+    <>
+      <div className={`${styles.stepper} ${pending ? styles.pending : ""}`}>
         <button
           type="submit"
           name="quantity"
-          value={quantity - 1}
+          value={shown - 1}
           className={styles.stepButton}
           // Stops a fast decrement run from deleting the line. Removal is a
           // separate, deliberate control.
-          disabled={quantity <= 1}
+          disabled={shown <= 1}
           aria-label={`One fewer ${name}`}
         >
           −
         </button>
 
         <span className={styles.count} aria-live="polite">
-          {optimisticQuantity}
+          {shown}
         </span>
 
         <button
           type="submit"
           name="quantity"
-          value={quantity + 1}
+          value={shown + 1}
           className={styles.stepButton}
-          disabled={quantity >= MAX_LINE_QUANTITY}
+          disabled={shown >= MAX_LINE_QUANTITY}
           aria-label={`One more ${name}`}
         >
           +
@@ -87,6 +104,6 @@ export function QuantityStepper({
       >
         Remove
       </button>
-    </form>
+    </>
   );
 }
