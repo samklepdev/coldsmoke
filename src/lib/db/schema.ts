@@ -177,6 +177,12 @@ export const orders = pgTable(
     paidAt: timestamp("paid_at", { withTimezone: true }),
     fulfilledAt: timestamp("fulfilled_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+
+    // Set when this order honoured a discount whose redemption cap had already
+    // been taken by a concurrent order. The customer was charged the
+    // discounted total, so the discount stands — but the overrun is recorded
+    // here rather than only logged, so it can be counted and reconciled.
+    discountOverrunAt: timestamp("discount_overrun_at", { withTimezone: true }),
   },
   (t) => [
     uniqueIndex("orders_number_idx").on(t.orderNumber),

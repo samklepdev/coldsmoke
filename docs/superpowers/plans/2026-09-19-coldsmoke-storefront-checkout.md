@@ -592,6 +592,12 @@ export const orders = pgTable(
     paidAt: timestamp("paid_at", { withTimezone: true }),
     fulfilledAt: timestamp("fulfilled_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+
+    // Set when this order honoured a discount whose redemption cap had already
+    // been taken by a concurrent order. The customer was charged the
+    // discounted total, so the discount stands — but the overrun is recorded
+    // here rather than only logged, so it can be counted and reconciled.
+    discountOverrunAt: timestamp("discount_overrun_at", { withTimezone: true }),
   },
   (t) => [
     uniqueIndex("orders_number_idx").on(t.orderNumber),
@@ -2999,11 +3005,70 @@ import {
   RESERVATION_WINDOW_MS,
 } from "@/lib/inventory";
 import { redeemDiscount } from "@/lib/discounts";
+import { getProductsByIds } from "@/lib/catalog";
 import { getPayments } from "@/lib/payments";
 
 export * from "./format";
 
 export type OrderWithItems = Order & { items: OrderItem[] };
+
+/**
+ * Thrown when a line names a product that cannot be sold — deleted, or no
+ * longer active. Reaching checkout with one means the cart outlived the
+ * catalogue entry, so the order must not be written at the stale terms.
+ */
+export class ProductUnavailableError extends Error {
+  constructor(public readonly productId: string) {
+    super(`Product ${productId} is not available for purchase`);
+    this.name = "ProductUnavailableError";
+  }
+}
+
+/**
+ * Thrown when a line's price disagrees with the catalogue. Charging the
+ * caller's figure would bill a price the catalogue never offered; charging the
+ * catalogue's silently would bill a price the customer was never shown. Both
+ * are wrong, so this refuses and lets the caller re-quote.
+ */
+export class PriceMismatchError extends Error {
+  constructor(
+    public readonly productId: string,
+    public readonly expectedCents: number,
+    public readonly receivedCents: number,
+  ) {
+    super(
+      `Product ${productId} is priced ${expectedCents} in the catalogue, not ${receivedCents}`,
+    );
+    this.name = "PriceMismatchError";
+  }
+}
+
+/**
+ * Treats the caller's prices as a claim rather than as fact.
+ *
+ * This is what makes createPendingOrder's "never from anything the client
+ * sent" guarantee true. It previously held only because every caller happened
+ * to build its lines from getCartLines — a convention nothing enforced, and
+ * one a price change between cart render and submit breaks on its own.
+ */
+async function assertLinesMatchCatalog(cartLines: QuoteLine[]): Promise<void> {
+  const catalog = await getProductsByIds(cartLines.map((l) => l.productId));
+  const byId = new Map(catalog.map((p) => [p.id, p]));
+
+  for (const line of cartLines) {
+    const product = byId.get(line.productId);
+    if (!product || !product.active) {
+      throw new ProductUnavailableError(line.productId);
+    }
+    if (product.priceCents !== line.unitPriceCents) {
+      throw new PriceMismatchError(
+        line.productId,
+        product.priceCents,
+        line.unitPriceCents,
+      );
+    }
+  }
+}
 
 /**
  * Creates (or refreshes) a pending order and its PaymentIntent.
@@ -3024,6 +3089,10 @@ export async function createPendingOrder(args: {
   const { cartLines, email, shippingAddress, discount = null } = args;
 
   if (cartLines.length === 0) throw new Error("Cannot create an order from an empty cart");
+
+  // Before the tax call and before any stock is reserved: a rejected order
+  // should cost neither a Stripe round trip nor a reservation to reclaim.
+  await assertLinesMatchCatalog(cartLines);
 
   const payments = getPayments();
   const preTax = quote(cartLines, discount, 0);
@@ -3105,13 +3174,33 @@ export async function createPendingOrder(args: {
     return created;
   });
 
-  const intent = await payments.createOrUpdateIntent({
-    paymentIntentId: reusable?.stripePaymentIntentId ?? null,
-    amountCents: final.totalCents,
-    email,
-    orderId: order.id,
-    orderNumber: order.orderNumber,
-  });
+  let intent;
+  try {
+    intent = await payments.createOrUpdateIntent({
+      paymentIntentId: reusable?.stripePaymentIntentId ?? null,
+      amountCents: final.totalCents,
+      email,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+    });
+  } catch (err) {
+    // The reservation transaction has already committed. Leaving it alone
+    // holds stock against a payment that will never arrive until the expiry
+    // sweep reclaims it — up to RESERVATION_WINDOW_MS of a small catalogue
+    // made unsellable by an error we already know happened.
+    try {
+      await cancelReservedOrder(order.id);
+    } catch (cleanupErr) {
+      // The sweep is still the backstop, so a failed cleanup is recoverable.
+      // What is not recoverable is hiding the error the caller needs to see,
+      // so this is logged and swallowed rather than thrown.
+      console.error("[orders] could not release a failed order's reservation", {
+        orderId: order.id,
+        cause: cleanupErr,
+      });
+    }
+    throw err;
+  }
 
   // Return the row as it stands AFTER the payment intent id is written.
   // Returning the pre-update `order` would hand the caller a row whose
@@ -3123,6 +3212,23 @@ export async function createPendingOrder(args: {
     .returning();
 
   return { order: withIntent, clientSecret: intent.clientSecret };
+}
+
+/**
+ * Undoes a committed reservation whose order can no longer proceed.
+ *
+ * Deliberately the same end state the expiry sweep produces — cancelled, with
+ * the stock given back — so an order cleaned up here is indistinguishable from
+ * one the sweep reclaimed, and nothing downstream needs a second case.
+ */
+async function cancelReservedOrder(orderId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await releaseStock(tx, orderId);
+    await tx
+      .update(orders)
+      .set({ status: "cancelled", cancelledAt: new Date() })
+      .where(and(eq(orders.id, orderId), eq(orders.status, "pending")));
+  });
 }
 
 /**
@@ -3246,13 +3352,25 @@ export async function markOrderPaid(
       if (!recorded) {
         // The cap was exhausted by a concurrent order between checkout and
         // payment. The customer has already been charged the discounted
-        // total, so we honour it and log the discrepancy rather than
+        // total, so we honour it and record the discrepancy rather than
         // throwing — a throw here would fail the webhook and have Stripe
         // retry a payment that already succeeded.
+        //
+        // Written to the order, not just logged: a log line cannot be queried,
+        // does not survive a restart, and cannot answer how often this happened
+        // or on which orders. The warn stays for operational visibility.
         console.warn("[orders] discount applied but not recorded", {
           orderId: order.id,
           discountCodeId: order.discountCodeId,
         });
+
+        const [marked] = await tx
+          .update(orders)
+          .set({ discountOverrunAt: new Date() })
+          .where(eq(orders.id, order.id))
+          .returning();
+
+        return marked;
       }
     }
 

@@ -667,3 +667,54 @@ Stepper Task 6: THE NO-JS CHECK FOUND A REAL BUG (commit 1b8e208)
 
   The blank-quantity bug reported on 2026-09-20 is now structurally
   impossible rather than guarded — there is no free-text box to clear.
+
+## Task 9's three deferred Importants, finally closed (2026-09-20)
+
+These were flagged Important during Task 9 and deferred to a "final review"
+that never happened. All three were still live in the code. Branch
+fix/order-path-hardening, one commit each, test-first.
+
+1. ORDER PRICES WERE NEVER RE-VALIDATED (commit 6960b6c).
+   createPendingOrder's doc comment promised the amount comes from database
+   prices and "never from anything the client sent". That held only because
+   every caller happened to build lines from getCartLines — a convention
+   nothing enforced. The RED test proved the hole: a line claiming
+   unitPriceCents: 1 for a $45 product wrote an order with subtotalCents: 1.
+   Lines are now re-read from the catalogue and REJECTED on mismatch rather
+   than silently re-priced — charging the caller's figure bills a price the
+   catalogue never offered, charging the catalogue's bills a price the
+   customer never saw. Deleted and deactivated products are rejected too;
+   they previously surfaced as an FK violation from inside the insert.
+   Runs before the tax call and before any reservation, so a rejected order
+   costs neither a Stripe round trip nor stock to reclaim.
+   Mutation-checked: removing the guard fails 6 of 7 tests.
+
+2. A FAILED PAYMENT INTENT ORPHANED THE RESERVATION (commit 3be065c).
+   The reservation transaction commits before createOrUpdateIntent runs. If
+   that threw, the order sat pending with stock held against a payment that
+   would never arrive until the expiry sweep — and retrying stacked a second
+   reservation (test saw reserved go to 2). Now cancels the order and releases
+   the stock, reaching exactly the state the sweep produces so nothing
+   downstream needs a new case. A cleanup failure is logged and swallowed:
+   the sweep is still the backstop, but masking the caller's error is not
+   recoverable. Test asserts the original error propagates.
+
+3. DISCOUNT CAP OVERRUN WAS console.warn ONLY (commit cd77c16).
+   Honouring an over-cap discount is right — the customer was already charged
+   the discounted total — but it left no queryable trace. Added nullable
+   orders.discount_overrun_at (migration 0004, additive, no backfill), set in
+   the same transaction as the paid transition. The warn stays for ops.
+
+TESTING HAZARD HIT AGAIN, IN MY OWN TEST:
+  The first version of the overrun test asserted `.not.toBeNull()`. undefined
+  is not null, so it went GREEN against a column that did not exist — while
+  the two weaker sibling tests failed. Only the sibling failures revealed it.
+  Now asserts toBeInstanceOf(Date). Third instance of this family in this
+  project. The rule that keeps catching it: assert the value you expect, never
+  merely the absence of one.
+  Same trap in the other direction: `toThrow(SomeClass)` matches ANY error
+  when the class is undefined, so the product-unavailable tests initially
+  passed off an unrelated FK violation. They now assert err.name too.
+
+Verified: 256 tests / 19 files, tsc clean, lint clean, build 10 routes,
+e2e 7/7 INCLUDING the real Stripe payment with stripe listen forwarding.
