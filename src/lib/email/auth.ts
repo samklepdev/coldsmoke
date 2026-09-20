@@ -68,6 +68,30 @@ async function send(args: {
   }
 }
 
+export function existingAccountEmail(url: string): { subject: string; text: string } {
+  return {
+    subject: "You already have a Coldsmoke account",
+    text: [
+      "Someone -- probably you -- just tried to create an account with this",
+      "address. You already have one, so we did not make a second.",
+      "",
+      "Sign in here:",
+      "",
+      url,
+      "",
+      "If you did not request a password reset, ignore this message. Nobody",
+      "can see your account or your orders from a sign-up attempt.",
+    ].join("\n"),
+  };
+}
+
+export function sendExistingAccountEmail(args: {
+  to: string;
+  url: string;
+}): Promise<{ delivered: boolean }> {
+  return send({ to: args.to, ...existingAccountEmail(args.url) });
+}
+
 export function sendVerificationEmail(args: {
   to: string;
   url: string;

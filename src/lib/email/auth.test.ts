@@ -9,6 +9,7 @@ vi.mock("./client", () => ({
 const {
   verificationEmail,
   passwordResetEmail,
+  existingAccountEmail,
   sendVerificationEmail,
   sendPasswordResetEmail,
 } = await import("./auth");
@@ -41,6 +42,23 @@ describe("email bodies", () => {
     // A password-reset mail that arrives unrequested is the one signal a
     // customer gets that someone is trying to get into their account.
     expect(passwordResetEmail(URL).text.toLowerCase()).toContain("did not request");
+  });
+
+  it("puts the sign-in link in the existing-account body", () => {
+    expect(existingAccountEmail(URL).text).toContain(URL);
+  });
+
+  it("says what the existing-account email is for", () => {
+    expect(existingAccountEmail(URL).subject).toBe(
+      "You already have a Coldsmoke account",
+    );
+  });
+
+  it("does not confirm the account to a stranger who guessed the address", () => {
+    // This mail goes to the real owner, not to whoever submitted the form, so
+    // it may say the account exists. What it must never do is imply the
+    // sign-up attempt revealed anything.
+    expect(existingAccountEmail(URL).text).toContain("Nobody");
   });
 });
 

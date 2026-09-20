@@ -4,7 +4,11 @@ import { admin } from "better-auth/plugins/admin";
 import { nextCookies } from "better-auth/next-js";
 import { db } from "@/lib/db/client";
 import * as schema from "@/lib/db/schema";
-import { sendVerificationEmail, sendPasswordResetEmail } from "@/lib/email/auth";
+import {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+  sendExistingAccountEmail,
+} from "@/lib/email/auth";
 
 /**
  * The Better Auth server instance. The only place `betterAuth()` is called.
@@ -30,6 +34,25 @@ export const auth = betterAuth({
     minPasswordLength: 8,
     sendResetPassword: async ({ user, url }) => {
       await sendPasswordResetEmail({ to: user.email, url });
+    },
+    /**
+     * Someone tried to sign up with an address that already has an account.
+     *
+     * Better Auth answers that attempt with a fabricated success response --
+     * a plausible user object that is never persisted -- so the browser
+     * cannot tell a taken address from a free one. It also hashes the
+     * submitted password first, so the two paths take comparable time.
+     *
+     * That leaves the real account holder as the only one who should learn
+     * anything, which is what this hook is for. Measured on 2026-09-20: this
+     * fires only because `requireEmailVerification` is true, which is what
+     * flips Better Auth into the generic-response path.
+     */
+    onExistingUserSignUp: async ({ user }) => {
+      await sendExistingAccountEmail({
+        to: user.email,
+        url: `${process.env.BETTER_AUTH_URL ?? ""}/sign-in`,
+      });
     },
   },
 
