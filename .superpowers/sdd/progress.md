@@ -250,3 +250,46 @@ BLOCKED — needs real Stripe test keys:
   degrades correctly — the error is not an OutOfStockError, so it lands in the
   generic catch and the customer sees "We couldn't start checkout." Every
   payment path is covered against FakePayments instead.
+Task 16: COMPLETE (commit ff9bf3d)
+  - Deviation: order-lookup split into a Server Component page + client form
+    so it can export metadata; the brief made the whole page a client
+    component, which cannot.
+  - Access control verified against the running app, not by inspection:
+    correct email 200, different-case email 200, wrong email 404, missing
+    email 404, non-existent order number 404.
+  - 7 tests on the lookup action, including that a wrong email and a
+    non-existent order number produce the IDENTICAL message — otherwise the
+    form is an order-number oracle.
+Task 17: COMPLETE (commit 2ae8033)
+  - Deviation: the brief's single paying test cannot pass without real Stripe
+    keys. Split into three tests that run today (shop -> cart -> checkout
+    form; quantity update surviving reload with totals recalculating; empty
+    cart bounced from /checkout) plus the brief's payment test kept verbatim
+    behind test.skip with a stated reason. It self-enables when a real
+    STRIPE_SECRET_KEY appears.
+  - 3 passed, 1 skipped.
+Task 18: COMPLETE (commit pending)
+  - Full suite green: 140 vitest tests, tsc clean, lint clean, production
+    build clean, 10 routes.
+  - README documents the two live caveats (placeholder Stripe keys, the
+    /the-scent and /about 404s) rather than describing an ideal state.
+
+PLAN 1 COMPLETE — 18/18 tasks.
+
+STILL OPEN for the owner:
+  1. DEFERRED PRODUCT DECISION (carried from Task 9, unchanged): the order
+     page takes the customer email as a URL query param, so it lands in
+     browser history, server access logs, and referrer headers — and the page
+     renders the full shipping address. Alternative: a short-lived httpOnly
+     cookie for the just-purchased order, keeping the email param only for
+     the emailed-receipt link. Not changed: it decides whether order pages
+     are shareable, which is the owner's call. Implemented as planned.
+  2. Real Stripe test keys, to close out Task 14 Step 4 and Task 15 Steps 4-5
+     and un-skip the Playwright payment test.
+  3. /the-scent and /about 404s (owner chose to leave them for a later plan).
+  4. Minors deferred across earlier tasks and never revisited: 4 moderate
+     transitive npm audit vulns (Task 1); no index on orders.user_id (Task 2,
+     defer to the auth plan); dead `?? 0` coalesce and duplicated
+     availability SQL across two call sites (Task 5); Wordmark's redundant
+     aria-label (Task 11); --line-bright on --panel at 3.13:1, only 0.13 over
+     the floor (Task 11).
