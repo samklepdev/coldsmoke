@@ -2999,11 +2999,70 @@ import {
   RESERVATION_WINDOW_MS,
 } from "@/lib/inventory";
 import { redeemDiscount } from "@/lib/discounts";
+import { getProductsByIds } from "@/lib/catalog";
 import { getPayments } from "@/lib/payments";
 
 export * from "./format";
 
 export type OrderWithItems = Order & { items: OrderItem[] };
+
+/**
+ * Thrown when a line names a product that cannot be sold — deleted, or no
+ * longer active. Reaching checkout with one means the cart outlived the
+ * catalogue entry, so the order must not be written at the stale terms.
+ */
+export class ProductUnavailableError extends Error {
+  constructor(public readonly productId: string) {
+    super(`Product ${productId} is not available for purchase`);
+    this.name = "ProductUnavailableError";
+  }
+}
+
+/**
+ * Thrown when a line's price disagrees with the catalogue. Charging the
+ * caller's figure would bill a price the catalogue never offered; charging the
+ * catalogue's silently would bill a price the customer was never shown. Both
+ * are wrong, so this refuses and lets the caller re-quote.
+ */
+export class PriceMismatchError extends Error {
+  constructor(
+    public readonly productId: string,
+    public readonly expectedCents: number,
+    public readonly receivedCents: number,
+  ) {
+    super(
+      `Product ${productId} is priced ${expectedCents} in the catalogue, not ${receivedCents}`,
+    );
+    this.name = "PriceMismatchError";
+  }
+}
+
+/**
+ * Treats the caller's prices as a claim rather than as fact.
+ *
+ * This is what makes createPendingOrder's "never from anything the client
+ * sent" guarantee true. It previously held only because every caller happened
+ * to build its lines from getCartLines — a convention nothing enforced, and
+ * one a price change between cart render and submit breaks on its own.
+ */
+async function assertLinesMatchCatalog(cartLines: QuoteLine[]): Promise<void> {
+  const catalog = await getProductsByIds(cartLines.map((l) => l.productId));
+  const byId = new Map(catalog.map((p) => [p.id, p]));
+
+  for (const line of cartLines) {
+    const product = byId.get(line.productId);
+    if (!product || !product.active) {
+      throw new ProductUnavailableError(line.productId);
+    }
+    if (product.priceCents !== line.unitPriceCents) {
+      throw new PriceMismatchError(
+        line.productId,
+        product.priceCents,
+        line.unitPriceCents,
+      );
+    }
+  }
+}
 
 /**
  * Creates (or refreshes) a pending order and its PaymentIntent.
@@ -3024,6 +3083,10 @@ export async function createPendingOrder(args: {
   const { cartLines, email, shippingAddress, discount = null } = args;
 
   if (cartLines.length === 0) throw new Error("Cannot create an order from an empty cart");
+
+  // Before the tax call and before any stock is reserved: a rejected order
+  // should cost neither a Stripe round trip nor a reservation to reclaim.
+  await assertLinesMatchCatalog(cartLines);
 
   const payments = getPayments();
   const preTax = quote(cartLines, discount, 0);
