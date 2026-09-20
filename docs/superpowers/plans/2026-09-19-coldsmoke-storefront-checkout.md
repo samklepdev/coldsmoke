@@ -6319,16 +6319,58 @@ Create `e2e/checkout.spec.ts`:
 
 ```ts
 import { test, expect } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+
+/** Where the app receives Stripe webhooks; `stripe listen` must forward here. */
+const WEBHOOK_PATH = "/api/stripe/webhook";
 
 /**
- * Paying requires a real Stripe test key. With the placeholder in .env the
- * tax call fails and checkout never reaches the Payment Element, so the
- * payment leg is skipped rather than left failing for a reason that has
- * nothing to do with the code under test.
+ * Why the payment test cannot run, or null if it can.
+ *
+ * Two things are required, and checking only the first is what made this test
+ * fail rather than skip: paying needs a real test key (with the .env
+ * placeholder the tax call fails and checkout never reaches the Payment
+ * Element), and the final assertion — "Confirmed" — only appears once the
+ * webhook marks the order paid, which needs `stripe listen` forwarding to this
+ * process. With real keys and no listener the test used to run all the way
+ * through the card form and then time out 30s later on an assertion about
+ * something the code under test had no part in.
+ *
+ * Known limitation: this confirms a listener is forwarding to the right path,
+ * not that the secret it printed matches STRIPE_WEBHOOK_SECRET in .env. A
+ * mismatch still fails, loudly, at signature verification — which is the right
+ * place for it to fail.
  */
-const STRIPE_KEYS_ARE_REAL =
-  (process.env.STRIPE_SECRET_KEY ?? "").length > 40 &&
-  !(process.env.STRIPE_SECRET_KEY ?? "").includes("placeholder");
+function paymentSkipReason(): string | null {
+  const key = process.env.STRIPE_SECRET_KEY ?? "";
+  if (key.length <= 40 || key.includes("placeholder")) {
+    return "Needs a real STRIPE_SECRET_KEY; .env holds a placeholder.";
+  }
+
+  // `ps` rather than pgrep: -a/-l differ between macOS and Linux, and a guard
+  // that throws on one platform would skip everywhere for the wrong reason.
+  let commands: string[] = [];
+  try {
+    commands = execFileSync("ps", ["-ax", "-o", "args="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).split("\n");
+  } catch {
+    return "Could not list processes to check for a `stripe listen` listener.";
+  }
+
+  const listeners = commands.filter((c) => /\bstripe\b.*\blisten\b/.test(c));
+  if (listeners.length === 0) {
+    return `No \`stripe listen\` is running; the webhook cannot reach ${WEBHOOK_PATH}, so the order never becomes "Confirmed".`;
+  }
+  if (!listeners.some((c) => c.includes(WEBHOOK_PATH))) {
+    return `A \`stripe listen\` is running but none forwards to ${WEBHOOK_PATH} — check its --forward-to.`;
+  }
+
+  return null;
+}
+
+const PAYMENT_SKIP_REASON = paymentSkipReason();
 
 const ADDRESS = {
   Email: "buyer@example.com",
@@ -6437,10 +6479,7 @@ test("an empty cart cannot reach checkout", async ({ page }) => {
 });
 
 test("a guest can buy a bottle", async ({ page }) => {
-  test.skip(
-    !STRIPE_KEYS_ARE_REAL,
-    "Needs a real STRIPE_SECRET_KEY; .env holds a placeholder.",
-  );
+  test.skip(PAYMENT_SKIP_REASON !== null, PAYMENT_SKIP_REASON ?? "");
 
   await addBottleToCart(page);
   await expect(page.getByText("$45.00").first()).toBeVisible();
