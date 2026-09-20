@@ -9,6 +9,13 @@ export const CART_COOKIE = "cs_cart";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 /**
+ * Per-line ceiling shared by the quantity inputs and the actions that write
+ * them. cart_items.quantity is int4 with no CHECK constraint, so an unbounded
+ * value would eventually overflow on the `quantity + n` upsert in addItem.
+ */
+export const MAX_LINE_QUANTITY = 99;
+
+/**
  * Reads the caller's cart id without creating one. Safe to call while
  * rendering a Server Component.
  *

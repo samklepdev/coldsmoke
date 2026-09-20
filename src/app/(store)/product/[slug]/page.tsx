@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { getProductBySlug } from "@/lib/catalog";
+import { MAX_LINE_QUANTITY } from "@/lib/cart";
 import { Wordmark } from "@/components/ui/Wordmark";
 import { Button } from "@/components/ui/Button";
 import { Price } from "@/components/ui/Price";
@@ -50,7 +51,7 @@ export default async function ProductPage({
             name="quantity"
             defaultValue={1}
             min={1}
-            max={Math.max(product.available, 1)}
+            max={Math.min(Math.max(product.available, 1), MAX_LINE_QUANTITY)}
             disabled={soldOut}
           />
           <Button type="submit" variant="primary" disabled={soldOut}>

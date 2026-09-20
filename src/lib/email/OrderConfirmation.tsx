@@ -3,7 +3,6 @@ import {
   Head,
   Body,
   Container,
-  Section,
   Text,
   Hr,
   Row,
