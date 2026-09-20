@@ -5656,7 +5656,9 @@ In one terminal: `npm run dev`
 In another:
 
 ```bash
-stripe listen --forward-to localhost:3000/api/stripe/webhook
+stripe listen \
+  --events payment_intent.succeeded,payment_intent.payment_failed,charge.refunded \
+  --forward-to localhost:3000/api/stripe/webhook
 ```
 
 Copy the printed `whsec_...` into `.env` as `STRIPE_WEBHOOK_SECRET`, restart the dev server, then place a test order through `/checkout`.
@@ -6260,7 +6262,7 @@ test("a guest can buy a bottle", async ({ page }) => {
 
 - [ ] **Step 6: Run the smoke test**
 
-Ensure `stripe listen --forward-to localhost:3000/api/stripe/webhook` is running, then:
+Ensure `stripe listen` is forwarding to `/api/stripe/webhook` (see Task 15), then:
 
 ```bash
 npm run test:e2e
@@ -6347,7 +6349,9 @@ npm run db:test:down
 ## Webhooks in development
 
 ```bash
-stripe listen --forward-to localhost:3000/api/stripe/webhook
+stripe listen \
+  --events payment_intent.succeeded,payment_intent.payment_failed,charge.refunded \
+  --forward-to localhost:3000/api/stripe/webhook
 ```
 
 Put the printed `whsec_...` in `.env` as `STRIPE_WEBHOOK_SECRET`.

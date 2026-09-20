@@ -451,3 +451,45 @@ lesson from the uncontrolled-input assertion earlier today. Three probes:
   D. baseline restored               -> 72 passed
 
 Suite is now 236 tests, of which 72 are this guard's parameterised cases.
+
+## Stripe: real test keys in place, webhook verified live (2026-09-20)
+
+Owner supplied real test keys. STRIPE_SECRET_KEY and the publishable key are
+now 107 chars and authenticate; RESEND_API_KEY is real too. I never handled
+their values — the webhook secret was obtained via `stripe listen
+--print-secret` and written into .env by a pipeline that never echoed it.
+
+Stripe CLI 1.51.0 installed via Homebrew. It authenticates from the key
+already in .env via STRIPE_API_KEY, so no interactive `stripe login`.
+
+PLAN DEFECT FOUND AND FIXED: the plan's `stripe listen --forward-to ...`
+no longer works. CLI 1.51 exits with "must specify events to forward using
+--events, --all-snapshot, or --all-thin". Updated in the plan, README and 3
+briefs to pass
+  --events payment_intent.succeeded,payment_intent.payment_failed,charge.refunded
+This class of rot is invisible to the drift guard, which only checks code
+blocks that name a source file — shell commands in prose are unguarded.
+
+VERIFIED LIVE against real Stripe (previously only against FakePayments):
+  - Signature verification passes with the real whsec. A wrong secret would
+    have produced 400; we got 500, so the signature path is genuinely
+    exercised.
+  - `stripe trigger payment_intent.succeeded` for a PaymentIntent with no
+    matching order -> 500, and stripe_events stayed EMPTY. That is the Task 9
+    Critical-1 fix — the ledger insert rolling back so Stripe retries rather
+    than the event being marked processed for a charge with no order. First
+    confirmation of it outside the fake.
+  - `stripe trigger payment_intent.payment_failed` -> 200, and the event IS
+    recorded in stripe_events. The designed asymmetry holds: succeeded-with-
+    no-order must retry, failed must not.
+  - `stripe listen` reports API version 2026-08-26.dahlia, matching the
+    adapter's pinned apiVersion.
+
+BLOCKED — needs an account setting only the owner can make:
+  Stripe Tax is `status: pending`, `missing_fields: ["head_office"]`.
+  createPendingOrder calls calculateTax and blocks by design when it fails, so
+  NO checkout can complete until an origin address is set under
+  Dashboard -> Settings -> Tax. Owner is doing this. Until then the card flow,
+  the paid transition, and the Playwright payment test remain unverified.
+  The business has no address yet — the brand plan still has [Street],
+  [City, ST ZIP] placeholders and the LLC is not formed.
