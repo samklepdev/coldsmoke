@@ -7,7 +7,6 @@ import {
   carts,
   cartItems,
   orders,
-  type Address,
 } from "@/lib/db/schema";
 import { FakePayments } from "@/lib/payments/fake";
 
@@ -138,14 +137,14 @@ describe("startCheckoutAction — address validation", () => {
     expect(state.status).toBe("ready");
 
     const [order] = await ctx.db.select().from(orders);
-    expect((order.shippingAddress as Address).state).toBe("MT");
+    expect(order.shippingAddress.state).toBe("MT");
   });
 
   it("stores no second address line when the optional field is left blank", async () => {
     await start({ line2: "" });
 
     const [order] = await ctx.db.select().from(orders);
-    expect((order.shippingAddress as Address).line2).toBeUndefined();
+    expect(order.shippingAddress.line2).toBeUndefined();
   });
 
   it("accepts a ZIP+4", async () => {
@@ -197,7 +196,7 @@ describe("startCheckoutAction — order creation", () => {
     expect(stock.reserved).toBe(1);
 
     const [order] = await ctx.db.select().from(orders);
-    expect((order.shippingAddress as Address).line1).toBe("2 Powder Lane");
+    expect(order.shippingAddress.line1).toBe("2 Powder Lane");
   });
 
   it("refuses an empty cart", async () => {

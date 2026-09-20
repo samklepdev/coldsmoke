@@ -130,12 +130,16 @@ export async function createPendingOrder(args: {
     orderNumber: order.orderNumber,
   });
 
-  await db
+  // Return the row as it stands AFTER the payment intent id is written.
+  // Returning the pre-update `order` would hand the caller a row whose
+  // stripePaymentIntentId is always null while the stored row has it set.
+  const [withIntent] = await db
     .update(orders)
     .set({ stripePaymentIntentId: intent.paymentIntentId })
-    .where(eq(orders.id, order.id));
+    .where(eq(orders.id, order.id))
+    .returning();
 
-  return { order, clientSecret: intent.clientSecret };
+  return { order: withIntent, clientSecret: intent.clientSecret };
 }
 
 /**

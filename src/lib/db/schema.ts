@@ -158,8 +158,10 @@ export const orders = pgTable(
     totalCents: integer("total_cents").notNull(),
     refundedCents: integer("refunded_cents").notNull().default(0),
 
-    shippingAddress: jsonb("shipping_address").notNull(),
-    billingAddress: jsonb("billing_address"),
+    // .$type is type-only — no migration. Without it every read casts
+    // `as Address` with nothing checking the shape.
+    shippingAddress: jsonb("shipping_address").$type<Address>().notNull(),
+    billingAddress: jsonb("billing_address").$type<Address>(),
 
     carrier: text("carrier"),
     trackingNumber: text("tracking_number"),

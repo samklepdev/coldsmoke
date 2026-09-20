@@ -11,7 +11,6 @@ import {
 import { formatCents } from "@/lib/money";
 import { formatOrderNumber } from "@/lib/orders/format";
 import type { OrderWithItems } from "@/lib/orders";
-import type { Address } from "@/lib/db/schema";
 
 const styles = {
   body: { background: "#0a0a0c", color: "#b7bbc1", fontFamily: "Helvetica, Arial, sans-serif", margin: 0 },
@@ -24,7 +23,7 @@ const styles = {
 };
 
 export function OrderConfirmation({ order }: { order: OrderWithItems }) {
-  const address = order.shippingAddress as Address;
+  const address = order.shippingAddress;
 
   return (
     <Html>
