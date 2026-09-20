@@ -60,6 +60,7 @@ from being *expressible*.
 |---|---|
 | `cart/page.tsx` (Server Component) | Loads lines, prices them via `quote()`, renders totals. Unchanged apart from swapping the control. |
 | `cart/QuantityStepper.tsx` (Client Component, new) | Renders −/＋/Remove for one line, owns the optimistic count. Knows nothing about money. |
+| `lib/cart/limits.ts` (new) | `MAX_LINE_QUANTITY`, free of server-only imports. `@/lib/cart` pulls in `next/headers` and the Postgres client, so importing the cap from it in a Client Component breaks the build. |
 | `setQuantityAction` (Server Action) | Unchanged. Validates and writes. |
 
 The stepper receives `productId`, `name`, and `quantity`. It returns no data; the page
@@ -83,7 +84,10 @@ the only control on the site that silently does nothing without JS.
 ### Data flow
 
 1. Click ＋. The form action reads the clicked button's `quantity` from `FormData`.
-2. `useOptimistic` sets the displayed count; `useTransition` marks the row pending.
+2. `useOptimistic` sets the displayed count. The row is marked pending by comparing
+   the optimistic count with the `quantity` prop — **not** `useTransition`, whose
+   `isPending` reads false throughout because a form action is already a
+   transition. Measured during a spike, not assumed.
 3. `setQuantityAction` writes and calls `revalidatePath("/cart")`.
 4. The Server Component re-renders. Line total, subtotal, shipping and total come from
    `quote()`. The new `quantity` prop supersedes the optimistic value.
