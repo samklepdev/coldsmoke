@@ -2161,7 +2161,7 @@ git commit -m "feat: transactional inventory with reservation expiry"
 ## Task 7: Cart identity and line management
 
 **Files:**
-- Create: `src/lib/cookies.ts`, `src/lib/cart/index.ts`, `src/lib/cart/cart.test.ts`
+- Create: `src/lib/cookies.ts`, `src/lib/cart/limits.ts`, `src/lib/cart/index.ts`, `src/lib/cart/cart.test.ts`
 
 **Interfaces:**
 - Consumes: `db`, `carts`, `cartItems`, `getProductsByIds`, `quote`
@@ -2321,6 +2321,28 @@ describe("cart lines", () => {
 Run: `npm test -- src/lib/cart`
 Expected: FAIL — `Failed to resolve import "./index"`
 
+- [ ] **Step 2b: Extract the quantity limit to its own module**
+
+Create `src/lib/cart/limits.ts`:
+
+```ts
+/**
+ * Cart limits, kept free of server-only imports.
+ *
+ * `@/lib/cart` pulls in next/headers and the Postgres client, so a Client
+ * Component importing a constant from it drags fs/net/tls and the database
+ * driver into the browser bundle and the build fails. Same reason
+ * `src/lib/cookies.ts` exists.
+ */
+
+/**
+ * Per-line ceiling shared by the quantity controls and the actions that write
+ * them. cart_items.quantity is int4 with no CHECK constraint, so an unbounded
+ * value would eventually overflow on the `quantity + n` upsert in addItem.
+ */
+export const MAX_LINE_QUANTITY = 99;
+```
+
 - [ ] **Step 3: Implement the cart module**
 
 Create `src/lib/cart/index.ts`:
@@ -2338,12 +2360,7 @@ export { CART_COOKIE };
 
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
-/**
- * Per-line ceiling shared by the quantity inputs and the actions that write
- * them. cart_items.quantity is int4 with no CHECK constraint, so an unbounded
- * value would eventually overflow on the `quantity + n` upsert in addItem.
- */
-export const MAX_LINE_QUANTITY = 99;
+export { MAX_LINE_QUANTITY } from "./limits";
 
 /**
  * Reads the caller's cart id without creating one. Safe to call while
@@ -3638,8 +3655,10 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
 
 - [ ] **Step 3: Implement the send function**
 
-Create `src/lib/email/index.tsx` (**.tsx, not .ts** — resend's types for
-the `react` field expect a `ReactElement`, so this file contains JSX):
+**.tsx, not .ts** — resend's types for the `react` field expect a
+`ReactElement`, so this file contains JSX.
+
+Create `src/lib/email/index.tsx`:
 
 ```ts
 import { getResend, EMAIL_FROM } from "./client";
@@ -4596,7 +4615,7 @@ git commit -m "feat: home, shop, and product pages"
 ## Task 13: Cart page
 
 **Files:**
-- Create: `src/app/(store)/cart/page.tsx` + `.module.css`, `src/app/(store)/cart/DiscountForm.tsx`
+- Create: `src/app/(store)/cart/page.tsx` + `.module.css`, `src/app/(store)/cart/DiscountForm.tsx`, `src/app/(store)/cart/QuantityStepper.tsx`
 - Modify: `src/app/(store)/actions.ts`
 
 **Interfaces:**
@@ -4769,12 +4788,59 @@ Create `src/app/(store)/cart/page.module.css`:
   gap: var(--space-2);
 }
 
-.qty {
-  width: 4.5rem;
-  padding: 0.5rem;
-  background: var(--panel);
+.stepper {
+  display: flex;
+  align-items: center;
   /* --line-bright, not --line: this is a control border and must clear 3:1. */
   border: 1px solid var(--line-bright);
+}
+
+.stepButton {
+  width: 2.25rem;
+  height: 2.25rem;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+  color: var(--text-bright);
+  border: 0;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.stepButton:hover:not(:disabled) {
+  background: var(--panel-raised);
+}
+
+.stepButton:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.count {
+  min-width: 2.5rem;
+  text-align: center;
+  color: var(--text-bright);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dim the row while the server catches up, without moving anything. */
+.pending {
+  opacity: 0.6;
+}
+
+.remove {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-left: var(--space-3);
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.remove:hover {
   color: var(--text-bright);
 }
 
@@ -4828,16 +4894,131 @@ Create `src/app/(store)/cart/page.module.css`:
 }
 ```
 
+Create `src/app/(store)/cart/QuantityStepper.tsx`:
+
+```tsx
+"use client";
+
+import { useFormStatus } from "react-dom";
+import { MAX_LINE_QUANTITY } from "@/lib/cart/limits";
+import { setQuantityAction } from "../actions";
+import styles from "./page.module.css";
+
+/**
+ * Per-line quantity control.
+ *
+ * Every control is a submit button carrying the quantity it would produce, so
+ * the form still works with JavaScript disabled — the rest of the store is
+ * built on Server Components and form actions, and this should not be the one
+ * control that silently does nothing without JS.
+ *
+ * `setQuantityAction` is passed to `action` DIRECTLY rather than wrapped in a
+ * client function. Next only emits the native form POST (method, URL, hidden
+ * action id) when it can see a Server Action here; wrapping it in a local
+ * async function to drive `useOptimistic` — which is what React's own
+ * useOptimistic example does — leaves a form that submits nowhere without
+ * JavaScript. That was measured with a JS-disabled browser, not assumed: `+`
+ * did nothing at all.
+ *
+ * Optimism stops at the integer count. Line totals and the cart summary come
+ * from quote() on the server, because a second money implementation on the
+ * client can silently disagree with the first.
+ */
+export function QuantityStepper({
+  productId,
+  name,
+  quantity,
+}: {
+  productId: string;
+  name: string;
+  quantity: number;
+}) {
+  return (
+    <form action={setQuantityAction} className={styles.qtyForm}>
+      <input type="hidden" name="productId" value={productId} />
+      <StepperControls name={name} quantity={quantity} />
+    </form>
+  );
+}
+
+/**
+ * Split out because `useFormStatus` only reports on a form it is rendered
+ * inside — called in the component that owns the <form> it would always read
+ * idle.
+ */
+function StepperControls({
+  name,
+  quantity,
+}: {
+  name: string;
+  quantity: number;
+}) {
+  const { pending, data } = useFormStatus();
+
+  // The in-flight FormData carries the clicked button's value, so the count
+  // can move the instant a button is pressed without a second source of truth.
+  // Once the server responds the form goes idle and `quantity` — the freshly
+  // revalidated prop — takes over again.
+  const submitted = pending ? Number(data?.get("quantity")) : Number.NaN;
+  const shown = Number.isInteger(submitted) ? submitted : quantity;
+
+  return (
+    <>
+      <div className={`${styles.stepper} ${pending ? styles.pending : ""}`}>
+        <button
+          type="submit"
+          name="quantity"
+          value={shown - 1}
+          className={styles.stepButton}
+          // Stops a fast decrement run from deleting the line. Removal is a
+          // separate, deliberate control.
+          disabled={shown <= 1}
+          aria-label={`One fewer ${name}`}
+        >
+          −
+        </button>
+
+        <span className={styles.count} aria-live="polite">
+          {shown}
+        </span>
+
+        <button
+          type="submit"
+          name="quantity"
+          value={shown + 1}
+          className={styles.stepButton}
+          disabled={shown >= MAX_LINE_QUANTITY}
+          aria-label={`One more ${name}`}
+        >
+          +
+        </button>
+      </div>
+
+      <button
+        type="submit"
+        name="quantity"
+        value={0}
+        className={styles.remove}
+        aria-label={`Remove ${name}`}
+      >
+        Remove
+      </button>
+    </>
+  );
+}
+```
+
 Create `src/app/(store)/cart/page.tsx`:
 
 ```tsx
 import type { Metadata } from "next";
-import { getCartId, getCartLines, MAX_LINE_QUANTITY } from "@/lib/cart";
+import { getCartId, getCartLines } from "@/lib/cart";
 import { quote, FREE_SHIPPING_THRESHOLD_CENTS } from "@/lib/pricing/quote";
 import { formatCents } from "@/lib/money";
-import { Button, ButtonLink } from "@/components/ui/Button";
-import { setQuantityAction, getActiveDiscount } from "../actions";
+import { ButtonLink } from "@/components/ui/Button";
+import { getActiveDiscount } from "../actions";
 import { DiscountForm } from "./DiscountForm";
+import { QuantityStepper } from "./QuantityStepper";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = { title: "Cart" };
@@ -4880,24 +5061,11 @@ export default async function CartPage() {
             </div>
           </div>
 
-          <form action={setQuantityAction} className={styles.qtyForm}>
-            <input type="hidden" name="productId" value={line.productId} />
-            <label className="sr-only" htmlFor={`qty-${line.productId}`}>
-              Quantity of {line.name}
-            </label>
-            <input
-              id={`qty-${line.productId}`}
-              className={styles.qty}
-              type="number"
-              name="quantity"
-              defaultValue={line.quantity}
-              min={0}
-              max={MAX_LINE_QUANTITY}
-            />
-            <Button type="submit" variant="quiet">
-              Update
-            </Button>
-          </form>
+          <QuantityStepper
+            productId={line.productId}
+            name={line.name}
+            quantity={line.quantity}
+          />
 
           <div>{formatCents(line.unitPriceCents * line.quantity)}</div>
         </div>
@@ -5656,7 +5824,9 @@ In one terminal: `npm run dev`
 In another:
 
 ```bash
-stripe listen --forward-to localhost:3000/api/stripe/webhook
+stripe listen \
+  --events payment_intent.succeeded,payment_intent.payment_failed,charge.refunded \
+  --forward-to localhost:3000/api/stripe/webhook
 ```
 
 Copy the printed `whsec_...` into `.env` as `STRIPE_WEBHOOK_SECRET`, restart the dev server, then place a test order through `/checkout`.
@@ -6095,6 +6265,10 @@ npx playwright install chromium
 Create `playwright.config.ts`:
 
 ```ts
+// The runner does not inherit .env the way `next dev` does. Without this the
+// payment test's "do we have real Stripe keys?" check reads undefined and the
+// test skips itself forever, including when the keys are present.
+import "dotenv/config";
 import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
@@ -6145,16 +6319,58 @@ Create `e2e/checkout.spec.ts`:
 
 ```ts
 import { test, expect } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+
+/** Where the app receives Stripe webhooks; `stripe listen` must forward here. */
+const WEBHOOK_PATH = "/api/stripe/webhook";
 
 /**
- * Paying requires a real Stripe test key. With the placeholder in .env the
- * tax call fails and checkout never reaches the Payment Element, so the
- * payment leg is skipped rather than left failing for a reason that has
- * nothing to do with the code under test.
+ * Why the payment test cannot run, or null if it can.
+ *
+ * Two things are required, and checking only the first is what made this test
+ * fail rather than skip: paying needs a real test key (with the .env
+ * placeholder the tax call fails and checkout never reaches the Payment
+ * Element), and the final assertion — "Confirmed" — only appears once the
+ * webhook marks the order paid, which needs `stripe listen` forwarding to this
+ * process. With real keys and no listener the test used to run all the way
+ * through the card form and then time out 30s later on an assertion about
+ * something the code under test had no part in.
+ *
+ * Known limitation: this confirms a listener is forwarding to the right path,
+ * not that the secret it printed matches STRIPE_WEBHOOK_SECRET in .env. A
+ * mismatch still fails, loudly, at signature verification — which is the right
+ * place for it to fail.
  */
-const STRIPE_KEYS_ARE_REAL =
-  (process.env.STRIPE_SECRET_KEY ?? "").length > 40 &&
-  !(process.env.STRIPE_SECRET_KEY ?? "").includes("placeholder");
+function paymentSkipReason(): string | null {
+  const key = process.env.STRIPE_SECRET_KEY ?? "";
+  if (key.length <= 40 || key.includes("placeholder")) {
+    return "Needs a real STRIPE_SECRET_KEY; .env holds a placeholder.";
+  }
+
+  // `ps` rather than pgrep: -a/-l differ between macOS and Linux, and a guard
+  // that throws on one platform would skip everywhere for the wrong reason.
+  let commands: string[] = [];
+  try {
+    commands = execFileSync("ps", ["-ax", "-o", "args="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).split("\n");
+  } catch {
+    return "Could not list processes to check for a `stripe listen` listener.";
+  }
+
+  const listeners = commands.filter((c) => /\bstripe\b.*\blisten\b/.test(c));
+  if (listeners.length === 0) {
+    return `No \`stripe listen\` is running; the webhook cannot reach ${WEBHOOK_PATH}, so the order never becomes "Confirmed".`;
+  }
+  if (!listeners.some((c) => c.includes(WEBHOOK_PATH))) {
+    return `A \`stripe listen\` is running but none forwards to ${WEBHOOK_PATH} — check its --forward-to.`;
+  }
+
+  return null;
+}
+
+const PAYMENT_SKIP_REASON = paymentSkipReason();
 
 const ADDRESS = {
   Email: "buyer@example.com",
@@ -6198,14 +6414,13 @@ test("a guest can fill a cart and reach the checkout form", async ({ page }) => 
 test("the cart survives a reload and totals recalculate", async ({ page }) => {
   await addBottleToCart(page);
 
-  await page.getByLabel(/^Quantity of /).fill("2");
-  await page.getByRole("button", { name: "Update" }).click();
+  await page.getByRole("button", { name: /^One more / }).click();
 
   // Wait for the SERVER-rendered total before reloading, or the reload races
   // the re-render and reads the pre-update cart.
   //
-  // Not the input's value: it is uncontrolled, so it still holds the "2" that
-  // was just typed whether or not the action landed. Asserting it passes
+  // Not the stepper's count: it is optimistic, so it shows 2 the instant the
+  // button is clicked whether or not the action landed. Asserting it passes
   // either way, which is worse than not asserting at all.
   await expect(page.getByText("$90.00").first()).toBeVisible();
 
@@ -6213,6 +6428,47 @@ test("the cart survives a reload and totals recalculate", async ({ page }) => {
   // Still $90 after a round trip, and two bottles clears free shipping.
   await expect(page.getByText("$90.00").first()).toBeVisible();
   await expect(page.getByText("Free")).toBeVisible();
+});
+
+test("the stepper changes quantity and price without an update button", async ({
+  page,
+}) => {
+  await addBottleToCart(page);
+
+  const subtotal = async () =>
+    (await page.locator("main").innerText()).match(/Subtotal\s*\$([0-9.,]+)/)?.[1];
+
+  await expect(page.getByRole("button", { name: "Update" })).toHaveCount(0);
+  expect(await subtotal()).toBe("45.00");
+
+  await page.getByRole("button", { name: /^One more / }).click();
+  // Two bottles is $90, which also clears the free-shipping threshold.
+  await expect(page.getByText("$90.00").first()).toBeVisible();
+  await expect(page.getByText("Free")).toBeVisible();
+
+  await page.getByRole("button", { name: /^One fewer / }).click();
+  // Not getByText("$45.00"): the unit price renders as "$45.00 each" and is
+  // visible at every quantity, so that assertion passes before the server has
+  // done anything and the subtotal read below races it. The subtotal is the
+  // only figure here that actually moves.
+  await expect.poll(subtotal).toBe("45.00");
+});
+
+test("the stepper cannot delete a line", async ({ page }) => {
+  await addBottleToCart(page);
+
+  // Removal is a separate, deliberate control, so one click past the end of a
+  // decrement run must not empty the cart.
+  await expect(page.getByRole("button", { name: /^One fewer / })).toBeDisabled();
+  await expect(page.getByText("Your cart is empty.")).toHaveCount(0);
+});
+
+test("Remove clears the line", async ({ page }) => {
+  await addBottleToCart(page);
+
+  await page.getByRole("button", { name: /^Remove / }).click();
+
+  await expect(page.getByText("Your cart is empty.")).toBeVisible();
 });
 
 test("an empty cart cannot reach checkout", async ({ page }) => {
@@ -6223,10 +6479,7 @@ test("an empty cart cannot reach checkout", async ({ page }) => {
 });
 
 test("a guest can buy a bottle", async ({ page }) => {
-  test.skip(
-    !STRIPE_KEYS_ARE_REAL,
-    "Needs a real STRIPE_SECRET_KEY; .env holds a placeholder.",
-  );
+  test.skip(PAYMENT_SKIP_REASON !== null, PAYMENT_SKIP_REASON ?? "");
 
   await addBottleToCart(page);
   await expect(page.getByText("$45.00").first()).toBeVisible();
@@ -6240,8 +6493,18 @@ test("a guest can buy a bottle", async ({ page }) => {
 
   await page.getByRole("button", { name: "Continue to payment" }).click();
 
-  // The Payment Element renders in a Stripe-hosted iframe.
-  const stripeFrame = page.frameLocator("iframe[title*='payment']").first();
+  // The Payment Element renders in a Stripe-hosted iframe. Two iframes share
+  // the title "Secure payment input frame", so disambiguate with .first()
+  // rather than frameLocator, which is strict and would throw.
+  const stripeFrame = page
+    .locator("iframe[title='Secure payment input frame']")
+    .first()
+    .contentFrame();
+
+  // The account has several payment methods enabled, so the Element opens on
+  // a method picker and the card fields do not exist until Card is chosen.
+  await stripeFrame.getByRole("button", { name: "Card", exact: true }).click();
+
   await stripeFrame
     .getByPlaceholder("1234 1234 1234 1234")
     .fill("4242424242424242");
@@ -6251,16 +6514,32 @@ test("a guest can buy a bottle", async ({ page }) => {
   await stripeFrame.getByPlaceholder("CVC").fill("123");
   await stripeFrame.getByPlaceholder("12345").fill("59715");
 
-  await page.getByRole("button", { name: /^Pay / }).click();
+  // Selecting Card expands the Element by ~570px, which pushes Pay far below
+  // the fold. Playwright's auto-scroll races that reflow and the click lands
+  // on nothing — silently, because a missed click is not an error. Scroll and
+  // let it settle first.
+  const pay = page.getByRole("button", { name: /^Pay / });
+  await pay.scrollIntoViewIfNeeded();
+  await expect(pay).toBeInViewport();
+  await pay.click();
 
   await expect(page).toHaveURL(/\/order\/\d+/, { timeout: 30_000 });
-  await expect(page.getByText(/CS-\d+/)).toBeVisible();
+
+  // getByText would also match Next's route announcer, which mirrors the
+  // heading into an aria-live region.
+  await expect(page.getByRole("heading", { name: /CS-\d+/ })).toBeVisible();
+
+  // The order lands as "Awaiting payment" and only becomes "Confirmed" once
+  // the webhook marks it paid, so this is the assertion that actually proves
+  // the paid transition rather than just the redirect. Requires
+  // `stripe listen` to be forwarding; PendingNotice polls for ~10s.
+  await expect(page.getByText("Confirmed")).toBeVisible({ timeout: 30_000 });
 });
 ```
 
 - [ ] **Step 6: Run the smoke test**
 
-Ensure `stripe listen --forward-to localhost:3000/api/stripe/webhook` is running, then:
+Ensure `stripe listen` is forwarding to `/api/stripe/webhook` (see Task 15), then:
 
 ```bash
 npm run test:e2e
@@ -6347,7 +6626,9 @@ npm run db:test:down
 ## Webhooks in development
 
 ```bash
-stripe listen --forward-to localhost:3000/api/stripe/webhook
+stripe listen \
+  --events payment_intent.succeeded,payment_intent.payment_failed,charge.refunded \
+  --forward-to localhost:3000/api/stripe/webhook
 ```
 
 Put the printed `whsec_...` in `.env` as `STRIPE_WEBHOOK_SECRET`.

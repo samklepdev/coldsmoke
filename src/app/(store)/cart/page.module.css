@@ -37,12 +37,59 @@
   gap: var(--space-2);
 }
 
-.qty {
-  width: 4.5rem;
-  padding: 0.5rem;
-  background: var(--panel);
+.stepper {
+  display: flex;
+  align-items: center;
   /* --line-bright, not --line: this is a control border and must clear 3:1. */
   border: 1px solid var(--line-bright);
+}
+
+.stepButton {
+  width: 2.25rem;
+  height: 2.25rem;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+  color: var(--text-bright);
+  border: 0;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.stepButton:hover:not(:disabled) {
+  background: var(--panel-raised);
+}
+
+.stepButton:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.count {
+  min-width: 2.5rem;
+  text-align: center;
+  color: var(--text-bright);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dim the row while the server catches up, without moving anything. */
+.pending {
+  opacity: 0.6;
+}
+
+.remove {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-left: var(--space-3);
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.remove:hover {
   color: var(--text-bright);
 }
 

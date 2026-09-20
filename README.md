@@ -77,28 +77,57 @@ in the shipped file — and the test caps how many may exist.
 The dev and test databases are separate Compose projects on separate ports and
 volumes. Starting one does not touch the other.
 
-`npm run test:e2e` runs three tests covering shop through to the checkout form.
-A fourth test pays with a card and skips itself unless `STRIPE_SECRET_KEY`
-holds a real key — see below.
+`npm run test:e2e` runs five tests, the last of which pays with a real Stripe
+test card and waits for the confirmation page to reach "Confirmed" — so it
+only passes while `stripe listen` is forwarding. It skips itself when
+`STRIPE_SECRET_KEY` is missing or a placeholder.
 
 ## Webhooks in development
 
 ```bash
-stripe listen --forward-to localhost:3000/api/stripe/webhook
+stripe listen \
+  --events payment_intent.succeeded,payment_intent.payment_failed,charge.refunded \
+  --forward-to localhost:3000/api/stripe/webhook
 ```
 
 Put the printed `whsec_...` in `.env` as `STRIPE_WEBHOOK_SECRET`.
 
+The `--events` flag is required: as of Stripe CLI 1.51 a bare
+`stripe listen --forward-to ...` exits with *"must specify events to forward
+using --events, --all-snapshot, or --all-thin"*. The three listed above are
+the ones `/api/stripe/webhook` acts on.
+
+`stripe listen` needs credentials. Either run `stripe login` once, or pass the
+key already in `.env` without an interactive login:
+
+```bash
+set -a && . ./.env && set +a
+STRIPE_API_KEY="$STRIPE_SECRET_KEY" stripe listen --events ... --forward-to ...
+```
+
 ## Current state
 
-Plan 1 is implemented end to end, but two things are worth knowing:
+Plan 1 is implemented and verified end to end against real Stripe: a test card
+pays, the webhook marks the order paid, stock commits, the cart clears, and a
+replayed event changes nothing. Four things are still worth knowing.
 
-- **Stripe keys are placeholders.** `.env` ships with `sk_test_placeholder`,
-  so anything that calls Stripe for real — tax calculation, the Payment
-  Element, `stripe listen`, `stripe events resend` — fails with an
-  authentication error until real test keys are set. Every payment path is
-  covered against `FakePayments`, and the failure degrades to "We couldn't
-  start checkout" rather than crashing, but the live card flow is unverified.
+- **Checkout requires Stripe Tax to be active.** `createPendingOrder` calls
+  `calculateTax` and deliberately blocks if it fails — charging a guessed tax
+  amount is worse than asking the customer to retry. If Stripe Tax is not
+  activated, every checkout returns "We couldn't start checkout." Check with:
+
+  ```bash
+  stripe tax settings retrieve      # status must be "active", not "pending"
+  ```
+
+  A fresh account reports `status: pending` with
+  `missing_fields: ["head_office"]`; set the origin address under
+  Dashboard → Settings → Tax. This is an account setting, not a code change.
+- **No sales tax is currently collected.** The account has an origin address
+  but **zero tax registrations**, so `calculateTax` returns 0 for every
+  destination. That is correct behaviour — Stripe only charges where you are
+  registered — but it means orders collect nothing today. Add registrations
+  under Dashboard → Tax → Registrations before going live.
 - **`/the-scent` and `/about` are linked but do not exist.** Both appear in the
   site header, and `/the-scent` in the home hero. They 404 today; the pages
   come with Plan 4.

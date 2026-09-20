@@ -1,3 +1,7 @@
+// The runner does not inherit .env the way `next dev` does. Without this the
+// payment test's "do we have real Stripe keys?" check reads undefined and the
+// test skips itself forever, including when the keys are present.
+import "dotenv/config";
 import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({

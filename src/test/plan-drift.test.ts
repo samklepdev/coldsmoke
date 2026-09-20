@@ -79,6 +79,30 @@ describe("the plan describes the code that shipped", () => {
     expect(blocks.length).toBeGreaterThan(30);
   });
 
+  it("parses every block the plan declares", () => {
+    // A malformed heading — a stray backtick, a missing colon — makes the
+    // parser skip the block silently, so the file it names stops being
+    // checked while the suite stays green. That happened once: a trailing
+    // backtick dropped cart/page.tsx from the guard, and because another
+    // file was added in the same commit the total count did not move.
+    //
+    // So count the declarations independently of the parser and require
+    // that every one produced a block.
+    const declared = [...plan.matchAll(/^(?:Create|Append to) `([^`]+)`/gm)]
+      .map((m) => m[1])
+      .filter((p) => /\.(ts|tsx|css|json)$/.test(p));
+
+    const parsed = blocks.map((b) => b.path);
+    const unparsed = declared.filter((p, i) => {
+      // Allow for the same path being declared more than once.
+      const declaredBefore = declared.slice(0, i).filter((x) => x === p).length;
+      const parsedCount = parsed.filter((x) => x === p).length;
+      return declaredBefore >= parsedCount;
+    });
+
+    expect(unparsed, "declared in the plan but not parsed — check the heading syntax").toEqual([]);
+  });
+
   it("references no file that does not exist", () => {
     const missing = blocks
       .map((b) => b.path)

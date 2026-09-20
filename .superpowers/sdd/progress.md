@@ -451,3 +451,219 @@ lesson from the uncontrolled-input assertion earlier today. Three probes:
   D. baseline restored               -> 72 passed
 
 Suite is now 236 tests, of which 72 are this guard's parameterised cases.
+
+## Stripe: real test keys in place, webhook verified live (2026-09-20)
+
+Owner supplied real test keys. STRIPE_SECRET_KEY and the publishable key are
+now 107 chars and authenticate; RESEND_API_KEY is real too. I never handled
+their values — the webhook secret was obtained via `stripe listen
+--print-secret` and written into .env by a pipeline that never echoed it.
+
+Stripe CLI 1.51.0 installed via Homebrew. It authenticates from the key
+already in .env via STRIPE_API_KEY, so no interactive `stripe login`.
+
+PLAN DEFECT FOUND AND FIXED: the plan's `stripe listen --forward-to ...`
+no longer works. CLI 1.51 exits with "must specify events to forward using
+--events, --all-snapshot, or --all-thin". Updated in the plan, README and 3
+briefs to pass
+  --events payment_intent.succeeded,payment_intent.payment_failed,charge.refunded
+This class of rot is invisible to the drift guard, which only checks code
+blocks that name a source file — shell commands in prose are unguarded.
+
+VERIFIED LIVE against real Stripe (previously only against FakePayments):
+  - Signature verification passes with the real whsec. A wrong secret would
+    have produced 400; we got 500, so the signature path is genuinely
+    exercised.
+  - `stripe trigger payment_intent.succeeded` for a PaymentIntent with no
+    matching order -> 500, and stripe_events stayed EMPTY. That is the Task 9
+    Critical-1 fix — the ledger insert rolling back so Stripe retries rather
+    than the event being marked processed for a charge with no order. First
+    confirmation of it outside the fake.
+  - `stripe trigger payment_intent.payment_failed` -> 200, and the event IS
+    recorded in stripe_events. The designed asymmetry holds: succeeded-with-
+    no-order must retry, failed must not.
+  - `stripe listen` reports API version 2026-08-26.dahlia, matching the
+    adapter's pinned apiVersion.
+
+BLOCKED — needs an account setting only the owner can make:
+  Stripe Tax is `status: pending`, `missing_fields: ["head_office"]`.
+  createPendingOrder calls calculateTax and blocks by design when it fails, so
+  NO checkout can complete until an origin address is set under
+  Dashboard -> Settings -> Tax. Owner is doing this. Until then the card flow,
+  the paid transition, and the Playwright payment test remain unverified.
+  The business has no address yet — the brand plan still has [Street],
+  [City, ST ZIP] placeholders and the LLC is not formed.
+
+## Stripe end-to-end VERIFIED (2026-09-20)
+
+Owner set the Tax head office (Houston, TX). Everything previously blocked is
+now confirmed against real Stripe.
+
+Task 14 Step 4, Task 15 Steps 4-5, Task 17 — all complete:
+  - Real card 4242… pays. Order 1013: status paid, inventory_state committed,
+    paid_at set, on_hand 50 -> 49, cart cleared, confirmation page shows
+    "Confirmed".
+  - Replay of the same event (`stripe events resend`) -> 200, on_hand and
+    reserved unchanged, still one ledger row. Idempotency proven, not assumed.
+  - Cron sweep exercised live for the first time: 401 with no header, 401 with
+    a wrong secret, 200 with the real CRON_SECRET, releasing 9 expired
+    reservations (reserved 12 -> 3, 9 orders cancelled, on_hand untouched).
+  - e2e now 5/5 including the real payment.
+
+FOUR DEFECTS FOUND, all in my own work:
+
+1. The Playwright payment test could never have run. Its skip guard reads
+   process.env.STRIPE_SECRET_KEY, but the Playwright runner does not load
+   .env — only `next dev` does. So it was always undefined and the test
+   skipped itself forever, including with real keys. Fixed by importing
+   dotenv/config in playwright.config.ts. Same family as the uncontrolled-
+   input assertion: a check that silently never fires.
+
+2. CART QUANTITY BUG, reported by the owner and reproduced. A cleared
+   quantity box submitted happily and nothing changed — no error, no update.
+   I introduced this in ae3f8a4: setQuantityAction refuses unparseable input
+   by re-rendering instead of deleting the line, which is right, but silent.
+   I even wrote a test locking the silence in. Fixed with `required` + `step`
+   on the input, so constraint validation refuses blank the same way it
+   already refused 2.5, -1 and >99. Every invalid case now states a reason.
+   New e2e regression test covers it.
+   NOTE: this is the same symptom I dismissed as a test race yesterday when
+   the flaky test showed header "Cart (2)" beside a $45.00 body. The race was
+   real, but so was a bug sitting next to it.
+
+3. The payment test's Pay click silently missed. Selecting Card expands the
+   Payment Element ~570px, pushing the button from y=688 to y=1261; Playwright's
+   auto-scroll raced the reflow and the click landed on nothing. A missed click
+   is not an error, so it looked like the button did nothing. Fixed with
+   scrollIntoViewIfNeeded + toBeInViewport before clicking.
+
+4. The payment test asserted only the redirect, so it passed while the order
+   was still "Awaiting payment". It now asserts "Confirmed", which is the only
+   assertion that actually proves the webhook marked the order paid.
+
+Also: the Payment Element opens on a method picker (Card, Cash App, Affirm,
+Klarna…), so the card fields do not exist until Card is selected, and two
+iframes share the title "Secure payment input frame" — frameLocator is strict
+and throws, so .first().contentFrame() is required. The plan's placeholder
+guesses were correct; the surrounding steps were not.
+
+OPEN: zero tax registrations, so calculateTax returns 0 for every destination.
+Correct behaviour (Stripe only charges where registered) but it means no sales
+tax is collected. Needs registrations before live. Documented in the README.
+
+# ============================================================
+# PLAN 2 — Cart Quantity Stepper (2026-09-20)
+# Plan: docs/superpowers/plans/2026-09-20-cart-quantity-stepper.md
+# Branch: feat/cart-stepper
+#
+# NOTE: the "Task N: complete" lines ABOVE this banner belong to PLAN 1
+# (storefront & checkout). Plan 2's entries are prefixed "Stepper Task N"
+# so a resumed session cannot confuse the two.
+# ============================================================
+Stepper Task 1: complete (commits 77472e1..fc061f2, review clean after 1 fix)
+  - src/lib/cart/limits.ts extracted; index.ts re-exports it. All three
+    existing importers unchanged and still resolve through the barrel.
+  - PLAN DEFECT found by the implementer, not by me: Task 1 changes
+    src/lib/cart/index.ts, which the drift guard tracks, but my Global
+    Constraints named only cart/page.tsx and deferred all syncing to Task 5.
+    That would have left the suite RED across Tasks 2-4, where a known
+    failure masks each implementer's own breakage. Plan restructured so every
+    task syncs the plan for whatever tracked file it touches, in the same
+    commit. The implementer escalated DONE_WITH_CONCERNS rather than
+    weakening the test — correct behaviour.
+  - limits.ts is now itself drift-tracked: guard went 72 -> 73 checks.
+
+OPERATIONAL HAZARD (cost ~15 min of false alarm):
+  Running `npm test` while a subagent is also running it produces ~21 FK
+  violations ("Key (product_id)=... is not present in table products").
+  Both processes TRUNCATE the same test database in beforeEach.
+  vitest.config.ts sets fileParallelism:false, which serialises files WITHIN
+  a run but does nothing across processes. Under subagent-driven development
+  concurrent runs are the norm, not the exception.
+  Rule: the controller does not run npm test while any subagent is live.
+  A real fix would be a per-process database or an advisory lock; not done.
+  - Review found 1 Important: commit c179b0e force-added
+    .superpowers/sdd/task-7-brief.md past the directory's `*` gitignore.
+    The reviewer attributed it to implementer scope creep; that was wrong —
+    MY fix dispatch named that path in its `git add` line, so the agent used
+    -f to comply and said so. Controller defect, not implementer error.
+    Resolved in fc061f2: untracked the file (kept on disk), and the stepper
+    plan now targets only the tracked plan document, stages no brief, and
+    states that briefs are generated by task-brief and never hand-edited or
+    force-added. plan-drift.test.ts only reads the plan markdown, so the
+    brief never affected the test the sync existed to fix.
+  - Minor logged for the final review: task-1-report.md's diff-stat summary
+    for index.ts disagrees with the actual diff (report-only inaccuracy).
+  - Second controller defect caught while waiting: I changed the Global
+    Constraint to "every task syncs in the same commit" but only gave Task 1
+    a sync step, while Tasks 2-4 each touch a tracked file and Task 5 still
+    did all the syncing at the end. Tasks 2-4 now sync their own file; Task 5
+    is repurposed as full verification. Briefs regenerated from the corrected
+    plan — the previously extracted ones were stale.
+
+Stepper Task 3: complete (commit 971b921)
+  - page.tsx now renders <QuantityStepper />; Plan 1 synced in the same commit.
+  - PLAN DEFECT: Task 3 Step 2 gave an "exactly" import block that omitted
+    DiscountForm, which page.tsx still renders. Applying it literally would
+    have failed with an undefined name, not the unused-import error Step 3
+    predicted. Kept the import.
+  - Verified in the browser: 3 -> 2 -> 1 via the stepper, subtotal tracking
+    each step ($135 / $90 / $45), shipping flipping Free -> $6.00 with the
+    "$5.00 more for free shipping" note returning at 1, and - correctly
+    disabled at quantity 1. No Update button anywhere.
+
+Stepper Task 4: complete (commit 8f503e9)
+  - Three stepper tests replace the free-text-box test.
+  - PLAN DEFECT: the plan said one test drove the removed input and to "leave
+    the other four alone". Two did — `the cart survives a reload and totals
+    recalculate` also used getByLabel(/^Quantity of /).fill() and the Update
+    button. Fixed it too, and rewrote its comment, which justified asserting
+    on the server total because the input was *uncontrolled*; the reason still
+    holds but the mechanism is now an *optimistic* count.
+  - TEST DEFECT in the plan's own supplied code: it asserted
+    getByText("$45.00").first() to wait for the decrement, but "$45.00" is
+    also the unit price ("$45.00 each"), visible at every quantity. The
+    assertion passed instantly and the subtotal read raced ahead of the
+    server — it failed on first run with 90.00. Replaced with
+    expect.poll(subtotal). Same family as the two "assertion that never
+    fires" bugs logged on 2026-09-20.
+
+Stepper Task 6: THE NO-JS CHECK FOUND A REAL BUG (commit 1b8e208)
+
+  This is the task that justified itself. Nothing in the automated suite
+  covers JavaScript being off, and with it off the stepper was inert:
+  clicking + left the quantity at 1 and the subtotal at $45.00.
+
+  Cause: QuantityStepper passed `action={submit}`, a client async function
+  wrapping setQuantityAction, so it could call useOptimistic first. Next only
+  emits the native form POST — method, URL, hidden action id — when it can
+  see a Server Action in `action`. Wrapped, the form submitted nowhere.
+  The buttons were `type="submit"` exactly as the plan's Global Constraint
+  demanded, so the markup satisfied the letter of the constraint while
+  failing its entire purpose. Reading the JSX could not have caught this;
+  only turning JavaScript off did.
+
+  Worth noting: the broken version is React's own documented useOptimistic
+  example (node_modules/next/dist/docs/01-app/02-guides/forms.md:386). The
+  docs never claim that pattern degrades — the progressive-enhancement
+  guarantee is stated separately, for forms whose action IS a Server Action.
+
+  Fix: pass setQuantityAction directly and read the in-flight FormData with
+  useFormStatus in a child component of the form. Same instant count, native
+  POST preserved. useFormStatus only reports on a form it is rendered inside,
+  hence the StepperControls split.
+
+  Verified with a JS-disabled Chromium context, 9/9 checks:
+    quantity 1 / subtotal $45.00 on load; - disabled at 1; + -> quantity 2,
+    subtotal $90.00, shipping Free; - -> quantity 1, subtotal $45.00;
+    Remove -> "Your cart is empty." Each click is a full round trip with no
+    optimism, which is the expected degraded behaviour.
+
+  Both plans were corrected so a re-run cannot reproduce the defect: the
+  Plan 1 code block, the Plan 2 code block, the Architecture note, the Tech
+  Stack line, the Global Constraint (which now says wrapping the action is as
+  fatal as an onClick and must be checked with JS off, not by reading
+  markup), and the Self-Review's error-handling and known-risk notes.
+
+  The blank-quantity bug reported on 2026-09-20 is now structurally
+  impossible rather than guarded — there is no free-text box to clear.
