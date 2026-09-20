@@ -176,3 +176,77 @@ Task 11: COMPLETE (commit 6a10c81 + a11y fix 8db2b76, review clean)
     its own text, and SiteHeader's Link aria-label overrides it) — remove it.
   - Minor noted: --line-bright on --panel is 3.13:1, only 0.13 over the floor.
     Revisit if --panel is ever lightened.
+Task 12: COMPLETE (commit de25ec4 + fix ae3f8a4)
+  - Code matched the brief; the scaffold home page was already removed in
+    7e244af. Review found one Important defect in the plan's own code.
+  - Important fixed: addToCartAction guarded with Number.isFinite, but addItem
+    throws on anything that is not a positive integer. Number("") === 0 is
+    finite, so clearing the quantity box threw a raw error out of a Server
+    Action. parseQuantity now rejects blank input SEPARATELY from zero —
+    important because on the cart page zero means "remove this line", so a
+    cleared field would otherwise have silently deleted it. That distinction
+    was found by a test failing, not by inspection.
+  - Also capped quantity at MAX_LINE_QUANTITY (99): cart_items.quantity is
+    int4 with no CHECK, so an unbounded value overflows the `quantity + n`
+    upsert. Product page max attribute now agrees with the server.
+  - 11 tests added, 6 fail against the pre-fix code.
+
+KNOWN 404s (user decision: leave, a later plan adds the pages):
+  /the-scent (SiteHeader + home hero CTA) and /about (SiteHeader) have no
+  routes and the plan never creates them. Both are live links in the primary
+  nav today.
+Task 13: COMPLETE (commit 416d07b)
+  - Deviation: a rejected discount code now revalidates /cart. The brief only
+    revalidated on success and on clearing, but the failure branch also
+    DELETES the cookie — so replacing a valid code with an invalid one left
+    the totals showing a discount that no longer existed.
+  - Deviation: inline styles moved into the CSS module, matching the rest of
+    the codebase.
+  - Verified against the running app, not just tests: $45 cart -> $6 shipping
+    + "$5.00 more"; adding the $6 sample -> Free at $51; applying smoke10 to
+    that $51 cart -> discount $5.10, post-discount subtotal $45.90, shipping
+    back to $6.00, total $51.90. Confirms a discount cannot buy free shipping
+    and that the countdown uses the same basis quote() does.
+  - 10 tests added covering the action's cookie writes and re-validation.
+Task 14: COMPLETE (commit fa7d57b)
+  - Deviation: state validated /^[A-Za-z]{2}$/ + uppercased, not length(2).
+    length(2) accepted "12" and passed "tx" through as typed — and this value
+    goes straight to Stripe Tax. 2 tests fail against the brief's schema.
+  - Deviation: line2 trims to undefined; an untouched optional input posts ""
+    which would have been stored as a blank address line.
+  - Deviation: router.replace + refresh instead of window.location.href. The
+    back button must not return to a checkout form for an order already paid,
+    and eslint rejects location assignment for internal routes in Next 16.
+  - Payment Element appearance remapped to real tokens — the brief used
+    #e4e7ec and #b7bbc1, which are not tokens at all. All mapped pairs
+    recomputed against --panel: 12.15 / 5.65 / 3.13, all pass AA.
+  - autocomplete added to all 7 address fields (brief had none).
+  - 11 tests: validation, order creation, pending-order reuse across an
+    address edit (asserts ONE order and ONE reservation), both out-of-stock
+    branches.
+Task 15: COMPLETE (commit a9beee6)
+  - Deviation: post-payment side effects isolated from the outer catch.
+    markOrderPaid has COMMITTED by then, so a clearCart/email failure returned
+    500 for a payment that actually succeeded — and Stripe's retry is a
+    guaranteed no-op (already-processed event -> null), so the side effects
+    never ran anyway. Outer catch deliberately left broad per fe05923.
+  - Deviation: cron route fails closed on unset CRON_SECRET. The brief
+    compared against `Bearer ${undefined}`, so sending the literal string
+    "Bearer undefined" authenticated. Now timing-safe as well.
+  - Latent defect found BY the tests, fixed at source: createPendingOrder
+    returned the order row captured before stripePaymentIntentId was written,
+    so that column was always null on the returned object. No caller read it
+    yet — which is why it was worth closing rather than working around.
+  - Queued schema fix landed: shipping/billing addresses now .$type<Address>()
+    (type-only, no migration), removing 4 blind `as Address` casts.
+  - 13 tests across both routes.
+
+BLOCKED — needs real Stripe test keys:
+  .env holds sk_test_placeholder / pk_test_placeholder / whsec_placeholder.
+  Confirmed by calling StripePayments.calculateTax directly:
+  StripeAuthenticationError "Invalid API Key provided: sk_test_*******lder".
+  Consequences: Task 14 Step 4 (pay with 4242…) and Task 15 Steps 4-5
+  (stripe listen / stripe events resend) could not be run. The failure path
+  degrades correctly — the error is not an OutOfStockError, so it lands in the
+  generic catch and the customer sees "We couldn't start checkout." Every
+  payment path is covered against FakePayments instead.
