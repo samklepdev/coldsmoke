@@ -363,13 +363,25 @@ export async function markOrderPaid(
       if (!recorded) {
         // The cap was exhausted by a concurrent order between checkout and
         // payment. The customer has already been charged the discounted
-        // total, so we honour it and log the discrepancy rather than
+        // total, so we honour it and record the discrepancy rather than
         // throwing — a throw here would fail the webhook and have Stripe
         // retry a payment that already succeeded.
+        //
+        // Written to the order, not just logged: a log line cannot be queried,
+        // does not survive a restart, and cannot answer how often this happened
+        // or on which orders. The warn stays for operational visibility.
         console.warn("[orders] discount applied but not recorded", {
           orderId: order.id,
           discountCodeId: order.discountCodeId,
         });
+
+        const [marked] = await tx
+          .update(orders)
+          .set({ discountOverrunAt: new Date() })
+          .where(eq(orders.id, order.id))
+          .returning();
+
+        return marked;
       }
     }
 

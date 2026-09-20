@@ -194,4 +194,75 @@ describe("markOrderPaid", () => {
     expect(result).not.toBeNull();
     expect(result!.status).toBe("paid");
   });
+
+  /**
+   * Honouring an over-cap discount is the right call — the customer has already
+   * been charged the discounted total — but it used to leave no trace beyond a
+   * console.warn. A log line is not a record: it cannot be queried, it is gone
+   * once the process restarts, and nobody can answer "how often did this
+   * happen, and on which orders?" from it.
+   */
+  it("records on the order that the discount cap was overrun", async () => {
+    const [discount] = await ctx.db
+      .insert(discountCodes)
+      .values({
+        code: "capped2",
+        type: "fixed",
+        value: 500,
+        maxRedemptions: 1,
+        timesRedeemed: 1, // already exhausted
+      })
+      .returning();
+
+    const { order: created } = await createOrder(1);
+    await ctx.db
+      .update(orders)
+      .set({ discountCodeId: discount.id })
+      .where(eq(orders.id, created.id));
+
+    const result = await markOrderPaid(created.stripePaymentIntentId!, "evt_capped2");
+
+    // toBeInstanceOf(Date), not .not.toBeNull(): undefined is not null, so a
+    // not-null assertion passes while the column does not exist at all.
+    expect(result!.discountOverrunAt).toBeInstanceOf(Date);
+
+    // And it is durable, not just present on the returned row.
+    const [stored] = await ctx.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, created.id));
+    expect(stored.discountOverrunAt).toBeInstanceOf(Date);
+  });
+
+  it("leaves the overrun marker unset when the discount redeems normally", async () => {
+    const [discount] = await ctx.db
+      .insert(discountCodes)
+      .values({
+        code: "roomy",
+        type: "fixed",
+        value: 500,
+        maxRedemptions: 5,
+        timesRedeemed: 0,
+      })
+      .returning();
+
+    const { order: created } = await createOrder(1);
+    await ctx.db
+      .update(orders)
+      .set({ discountCodeId: discount.id })
+      .where(eq(orders.id, created.id));
+
+    const result = await markOrderPaid(created.stripePaymentIntentId!, "evt_roomy");
+
+    expect(result!.status).toBe("paid");
+    expect(result!.discountOverrunAt).toBeNull();
+  });
+
+  it("leaves the overrun marker unset for an order with no discount", async () => {
+    const { order: created } = await createOrder(1);
+
+    const result = await markOrderPaid(created.stripePaymentIntentId!, "evt_nodisc");
+
+    expect(result!.discountOverrunAt).toBeNull();
+  });
 });

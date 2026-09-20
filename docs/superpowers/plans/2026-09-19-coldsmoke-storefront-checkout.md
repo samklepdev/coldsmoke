@@ -592,6 +592,12 @@ export const orders = pgTable(
     paidAt: timestamp("paid_at", { withTimezone: true }),
     fulfilledAt: timestamp("fulfilled_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+
+    // Set when this order honoured a discount whose redemption cap had already
+    // been taken by a concurrent order. The customer was charged the
+    // discounted total, so the discount stands — but the overrun is recorded
+    // here rather than only logged, so it can be counted and reconciled.
+    discountOverrunAt: timestamp("discount_overrun_at", { withTimezone: true }),
   },
   (t) => [
     uniqueIndex("orders_number_idx").on(t.orderNumber),
@@ -3346,13 +3352,25 @@ export async function markOrderPaid(
       if (!recorded) {
         // The cap was exhausted by a concurrent order between checkout and
         // payment. The customer has already been charged the discounted
-        // total, so we honour it and log the discrepancy rather than
+        // total, so we honour it and record the discrepancy rather than
         // throwing — a throw here would fail the webhook and have Stripe
         // retry a payment that already succeeded.
+        //
+        // Written to the order, not just logged: a log line cannot be queried,
+        // does not survive a restart, and cannot answer how often this happened
+        // or on which orders. The warn stays for operational visibility.
         console.warn("[orders] discount applied but not recorded", {
           orderId: order.id,
           discountCodeId: order.discountCodeId,
         });
+
+        const [marked] = await tx
+          .update(orders)
+          .set({ discountOverrunAt: new Date() })
+          .where(eq(orders.id, order.id))
+          .returning();
+
+        return marked;
       }
     }
 
