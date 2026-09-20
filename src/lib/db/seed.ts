@@ -15,7 +15,7 @@ const SEED = [
     sortOrder: 0,
     onHand: 50,
     image: {
-      url: "/images/coldsmoke-fallback-bottle.png",
+      url: "/images/coldsmoke-fallback-bottle.svg",
       alt: "The Coldsmoke 50 mL bottle, a dark flask with a brushed silver cap, lit from behind against near-black.",
     },
   },
@@ -30,7 +30,7 @@ const SEED = [
     sortOrder: 1,
     onHand: 200,
     image: {
-      url: "/images/coldsmoke-fallback-brand.png",
+      url: "/images/coldsmoke-fallback-brand.svg",
       alt: "The Coldsmoke brand card: the wordmark over the line “Cold air. Dark spice.”",
     },
   },
