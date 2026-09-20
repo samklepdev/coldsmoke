@@ -23,6 +23,13 @@
   gap: var(--space-5);
 }
 
+/* Total and receipt note read as one block, so they sit closer than the
+   form's row gap. */
+.summary {
+  display: grid;
+  gap: var(--space-2);
+}
+
 .error {
   color: var(--danger);
 }
@@ -34,4 +41,9 @@
 
 .total {
   color: var(--text-bright);
+}
+
+.receiptNote {
+  color: var(--text-faint);
+  font-size: 0.8rem;
 }

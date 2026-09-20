@@ -340,3 +340,49 @@ guide to 35 files and an actively misleading one for 31.
 NOT fixed — the script to re-check this lives at scratchpad/plan_drift.py and
 is cheap to re-run. Deciding whether the plan should be a living document or
 a historical artefact is the owner's call.
+
+## Order page access: cookie instead of email-in-URL (2026-09-20)
+
+Owner decision on the deferred Task 9 item: short-lived httpOnly cookie.
+
+The email template turned out to contain NO link, so ?email= existed purely
+for two in-app flows I control. That let the parameter be removed entirely
+rather than kept as a fallback.
+
+Design note worth keeping: the cookie holds order IDS, not order numbers.
+orders.id is a v4 UUID, so the cookie value is itself the credential. A cookie
+naming "CS-1000" would be trivially forgeable — httpOnly stops page scripts,
+not a hand-written request. The grant check is an inArray in the WHERE clause
+(findOrderByNumberForIds), so there is no code path that reads an order
+without a credential, and an empty grant list short-circuits rather than
+degrading to "no filter".
+
+Verified over HTTP against the running app:
+  ?email=correct 404 | ?email=wrong 404 | no credential 404
+  correct cookie 200 | forged cookie 404 | empty 404 | other order's id 404
+11 new tests on the access module, plus grant assertions in the checkout and
+lookup action suites. 154 tests total.
+
+Propagated into the plan and briefs in the same pass this time (tasks 9, 13,
+14, 16). 39 files now byte-identical to the plan, up from 35.
+
+### Flaky e2e test — found, misdiagnosed once, then fixed
+
+"the cart survives a reload" failed ~1 run in 4. First diagnosis was wrong: I
+called it environmental (stale .next after interleaving next build and next
+dev) because I could not reproduce it, and it had passed 8 runs straight.
+Kept running it, and it failed 1-in-6 — genuinely flaky, not environmental.
+
+The guard I had added first was worse than nothing:
+  await expect(page.getByLabel(/^Quantity of /)).toHaveValue("2");
+The quantity input is UNCONTROLLED, so it holds the typed "2" whether or not
+the action landed. That assertion passes in both the good and bad cases.
+
+The failure snapshot showed the real shape: header read "Cart (2)" while the
+body still read quantity 1 / Subtotal $45.00 — the write had landed, and the
+test was racing the server re-render, not the database. Fixed by waiting on
+the server-rendered total ($90.00) before reloading. 15/15 clean after,
+having been ~1-in-4 before.
+
+Lesson to carry: an assertion that cannot fail is indistinguishable from
+green. Check what a guard is actually reading before trusting it.

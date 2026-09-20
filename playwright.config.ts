@@ -12,7 +12,12 @@ export default defineConfig({
   webServer: {
     command: "npm run dev",
     url: "http://localhost:3000",
-    reuseExistingServer: true,
+    // Locally, reuse whatever server is already up. In CI always start a
+    // fresh one: `next build` and `next dev` share the .next directory, and a
+    // dev server left running across a build can serve pages that render
+    // correctly while Server Action POSTs silently no-op, which shows up as a
+    // baffling assertion failure rather than an error.
+    reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
 });

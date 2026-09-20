@@ -178,6 +178,15 @@ describe("startCheckoutAction — order creation", () => {
     expect(jar.get("cs_pending_order")).toBe(order.id);
   });
 
+  it("grants this browser access to the order it just created", async () => {
+    await start();
+
+    const [order] = await ctx.db.select().from(orders);
+    // Without this the customer is redirected to a confirmation page they
+    // cannot read, since the email no longer travels in the URL.
+    expect(jar.get("cs_order_access")).toBe(order.id);
+  });
+
   it("reuses the pending order when the address is edited", async () => {
     const first = await start();
     if (first.status !== "ready") throw new Error("expected ready");

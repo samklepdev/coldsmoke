@@ -1,10 +1,11 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import {
-  findOrderByNumber,
+  findOrderByNumberForIds,
   parseOrderNumber,
   formatOrderNumber,
 } from "@/lib/orders";
+import { readGrantedOrderIds } from "@/lib/orders/access";
 import { formatCents } from "@/lib/money";
 import { PendingNotice } from "./PendingNotice";
 import styles from "./page.module.css";
@@ -22,19 +23,24 @@ const STATUS_COPY: Record<string, string> = {
 
 export default async function OrderPage({
   params,
-  searchParams,
 }: PageProps<"/order/[number]">) {
   const { number } = await params;
-  const { email } = await searchParams;
 
   const orderNumber = parseOrderNumber(number);
-  const emailParam = typeof email === "string" ? email : null;
+  if (orderNumber === null) notFound();
 
-  // Guest orders are protected by requiring the email that placed them —
-  // an order number alone must not expose an address.
-  if (orderNumber === null || !emailParam) notFound();
+  // Access comes from an httpOnly cookie holding the order's id, not from a
+  // query parameter. The customer's email used to travel in the URL, which
+  // put it in browser history, server access logs and outbound referrers on a
+  // page that renders their full shipping address.
+  //
+  // Anyone without the cookie — including the customer on another device —
+  // re-enters through /order-lookup, which re-establishes it.
+  const granted = await readGrantedOrderIds();
+  const order = await findOrderByNumberForIds(orderNumber, granted);
 
-  const order = await findOrderByNumber(orderNumber, emailParam);
+  // 404, not a redirect to the lookup form: a distinguishable response would
+  // confirm which order numbers exist.
   if (!order) notFound();
 
   const address = order.shippingAddress;

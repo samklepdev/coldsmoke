@@ -2120,7 +2120,7 @@ Create `src/lib/cart/index.ts`:
 
 ```ts
 import { cookies } from "next/headers";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { carts, cartItems } from "@/lib/db/schema";
 import { getProductsByIds } from "@/lib/catalog";
@@ -2612,6 +2612,7 @@ git commit -m "feat: payments adapter with Stripe implementation and test fake"
   - `createPendingOrder(args): Promise<{ order: Order; clientSecret: string }>`
   - `markOrderPaid(paymentIntentId: string, eventId: string): Promise<Order | null>`
   - `findOrderByNumber(orderNumber: number, email: string): Promise<OrderWithItems | null>`
+  - `findOrderByNumberForIds(orderNumber: number, allowedOrderIds: string[]): Promise<OrderWithItems | null>`
   - `type OrderWithItems = Order & { items: OrderItem[] }`
 
 - [ ] **Step 1: Write the failing tests**
@@ -2677,7 +2678,7 @@ Expected: PASS — 5 tests passing
 Create `src/lib/orders/index.ts`:
 
 ```ts
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   orders,
@@ -2891,6 +2892,42 @@ export async function markOrderPaid(
 
     return order;
   });
+}
+
+/**
+ * Looks up an order the caller has already proved access to, by matching the
+ * order number against a set of order ids granted to this browser.
+ *
+ * The id filter is part of the WHERE clause rather than a check on the result,
+ * so there is no code path here that reads an order without a credential.
+ * An empty grant list short-circuits: `inArray(x, [])` is an SQL no-op in some
+ * dialects, and "no credentials" must never mean "no filter".
+ */
+export async function findOrderByNumberForIds(
+  orderNumber: number,
+  allowedOrderIds: string[],
+): Promise<OrderWithItems | null> {
+  if (allowedOrderIds.length === 0) return null;
+
+  const [order] = await db
+    .select()
+    .from(orders)
+    .where(
+      and(
+        eq(orders.orderNumber, orderNumber),
+        inArray(orders.id, allowedOrderIds),
+      ),
+    )
+    .limit(1);
+
+  if (!order) return null;
+
+  const items = await db
+    .select()
+    .from(orderItems)
+    .where(eq(orderItems.orderId, order.id));
+
+  return { ...order, items };
 }
 
 export async function findOrderByNumber(
@@ -4237,9 +4274,24 @@ therefore live in their own module.
 Create `src/lib/cookies.ts`:
 
 ```ts
+/**
+ * Cookie names live here rather than beside the actions that read them.
+ *
+ * A `"use server"` module may export only async functions — Next.js rejects a
+ * plain `const` export from a server-action file at build time — so any name
+ * shared between an action and a Server Component needs a neutral home.
+ */
 export const CART_COOKIE = "cs_cart";
 export const DISCOUNT_COOKIE = "cs_discount";
 export const PENDING_ORDER_COOKIE = "cs_pending_order";
+
+/**
+ * Orders this browser is allowed to view, as a comma-separated list of order
+ * ids. The id is a v4 UUID, so the cookie value IS the credential — a cookie
+ * naming an order by its customer-facing number would be trivially forgeable,
+ * since httpOnly stops page scripts but not a hand-written request.
+ */
+export const ORDER_ACCESS_COOKIE = "cs_order_access";
 ```
 
 Then update `src/lib/cart/index.ts` to import `CART_COOKIE` from
@@ -4604,6 +4656,7 @@ import { cookies } from "next/headers";
 import { getOrCreateCartId, getCartLines, setQuantity } from "@/lib/cart";
 import { getCatalogProductById } from "@/lib/catalog";
 import { createPendingOrder } from "@/lib/orders";
+import { grantOrderAccess } from "@/lib/orders/access";
 import { OutOfStockError } from "@/lib/inventory";
 import { PENDING_ORDER_COOKIE } from "@/lib/cookies";
 import { getActiveDiscount } from "../actions";
@@ -4686,6 +4739,11 @@ export async function startCheckoutAction(
       maxAge: 60 * 30,
     });
 
+    // Whoever created this order may view it. Granted here rather than after
+    // payment because the confirmation page is also where an unpaid order
+    // reports its status, and the webhook has no access to this cookie jar.
+    await grantOrderAccess(order.id);
+
     return {
       status: "ready",
       clientSecret,
@@ -4736,6 +4794,7 @@ Create `src/app/(store)/checkout/CheckoutForm.tsx`:
 "use client";
 
 import { useActionState, useState } from "react";
+import { useRouter } from "next/navigation";
 import { loadStripe } from "@stripe/stripe-js";
 import {
   Elements,
@@ -4826,8 +4885,14 @@ function PaymentStep({
 }) {
   const stripe = useStripe();
   const elements = useElements();
+  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // No email in the URL: access is carried by the httpOnly cookie the
+  // checkout action set, so the confirmation page keeps the customer's
+  // address out of browser history, access logs and referrer headers.
+  const confirmationUrl = `/order/${orderNumber}`;
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -4839,7 +4904,7 @@ function PaymentStep({
     const result = await stripe.confirmPayment({
       elements,
       confirmParams: {
-        return_url: `${window.location.origin}/order/${orderNumber}?email=${encodeURIComponent(email)}`,
+        return_url: `${window.location.origin}${confirmationUrl}`,
       },
       redirect: "if_required",
     });
@@ -4850,7 +4915,11 @@ function PaymentStep({
       return;
     }
 
-    window.location.href = `/order/${orderNumber}?email=${encodeURIComponent(email)}`;
+    // replace, not push: the back button must not return to a checkout form
+    // for an order that has already been paid. refresh re-renders the shared
+    // store layout so the header's cart count reflects the cleared cart.
+    router.replace(confirmationUrl);
+    router.refresh();
   }
 
   return (
@@ -5177,11 +5246,86 @@ git commit -m "feat: Stripe webhook with idempotency and reservation sweep"
 ## Task 16: Order confirmation and guest order lookup
 
 **Files:**
-- Create: `src/app/(store)/order/[number]/page.tsx` + `.module.css`, `src/app/(store)/order/[number]/PendingNotice.tsx`, `src/app/(store)/order-lookup/page.tsx`, `src/app/(store)/order-lookup/actions.ts`
+- Create: `src/lib/orders/access.ts`, `src/app/(store)/order/[number]/page.tsx` + `.module.css`, `src/app/(store)/order/[number]/PendingNotice.tsx`, `src/app/(store)/order-lookup/page.tsx`, `src/app/(store)/order-lookup/actions.ts`
 
 **Interfaces:**
-- Consumes: `findOrderByNumber`, `parseOrderNumber`, `formatOrderNumber`, `formatCents`
-- Produces: `lookupOrderAction(prev, formData): Promise<{ error?: string }>` (redirects on success)
+- Consumes: `findOrderByNumberForIds`, `parseOrderNumber`, `formatOrderNumber`, `formatCents`
+- Produces: `lookupOrderAction(prev, formData): Promise<{ error?: string }>` (redirects on success); `grantOrderAccess` / `readGrantedOrderIds`
+
+- [ ] **Step 0: Build the order-access module**
+
+The confirmation page must not take the customer's email as a query
+parameter. It renders a full shipping address, and a URL lands in browser
+history, server access logs and any outbound referrer. Access is carried by
+an httpOnly cookie instead.
+
+The cookie holds order **ids**, not order numbers. `orders.id` is a v4 UUID,
+so the cookie value is itself the unguessable credential — httpOnly stops
+page scripts from reading it, but nothing stops a hand-written request from
+sending whatever it likes, so a cookie naming `CS-1000` would grant anyone
+access to order 1000.
+
+Create `src/lib/orders/access.ts`:
+
+```ts
+import { cookies } from "next/headers";
+import { ORDER_ACCESS_COOKIE } from "@/lib/cookies";
+
+/**
+ * How many recent orders a browser keeps access to. A customer who orders
+ * repeatedly should not silently lose the confirmation page for the previous
+ * one, but the cookie must not grow without bound either.
+ */
+const MAX_REMEMBERED_ORDERS = 10;
+
+const MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
+
+function parse(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .slice(0, MAX_REMEMBERED_ORDERS);
+}
+
+/**
+ * Order ids this browser may view. Safe to call while rendering a Server
+ * Component — it only reads.
+ *
+ * These ids are untrusted input: anything could be in the cookie. They are
+ * only ever used as an equality filter against a specific order number, so a
+ * forged value has to be a correct UUID guess to grant anything.
+ */
+export async function readGrantedOrderIds(): Promise<string[]> {
+  const jar = await cookies();
+  return parse(jar.get(ORDER_ACCESS_COOKIE)?.value);
+}
+
+/**
+ * Remembers that this browser may view an order. Most recent first, so the
+ * cap evicts the oldest.
+ *
+ * WRITES A COOKIE — callable only from a Server Action or Route Handler.
+ */
+export async function grantOrderAccess(orderId: string): Promise<void> {
+  const jar = await cookies();
+  const existing = parse(jar.get(ORDER_ACCESS_COOKIE)?.value);
+
+  const next = [orderId, ...existing.filter((id) => id !== orderId)].slice(
+    0,
+    MAX_REMEMBERED_ORDERS,
+  );
+
+  jar.set(ORDER_ACCESS_COOKIE, next.join(","), {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: MAX_AGE_SECONDS,
+    path: "/",
+  });
+}
+```
 
 - [ ] **Step 1: Build the pending-state client component**
 
@@ -5283,9 +5427,13 @@ Create `src/app/(store)/order/[number]/page.tsx`:
 ```tsx
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import { findOrderByNumber, parseOrderNumber, formatOrderNumber } from "@/lib/orders";
+import {
+  findOrderByNumberForIds,
+  parseOrderNumber,
+  formatOrderNumber,
+} from "@/lib/orders";
+import { readGrantedOrderIds } from "@/lib/orders/access";
 import { formatCents } from "@/lib/money";
-import type { Address } from "@/lib/db/schema";
 import { PendingNotice } from "./PendingNotice";
 import styles from "./page.module.css";
 
@@ -5302,32 +5450,39 @@ const STATUS_COPY: Record<string, string> = {
 
 export default async function OrderPage({
   params,
-  searchParams,
 }: PageProps<"/order/[number]">) {
   const { number } = await params;
-  const { email } = await searchParams;
 
   const orderNumber = parseOrderNumber(number);
-  const emailParam = typeof email === "string" ? email : null;
+  if (orderNumber === null) notFound();
 
-  // Guest orders are protected by requiring the email that placed them —
-  // an order number alone must not expose an address.
-  if (orderNumber === null || !emailParam) notFound();
+  // Access comes from an httpOnly cookie holding the order's id, not from a
+  // query parameter. The customer's email used to travel in the URL, which
+  // put it in browser history, server access logs and outbound referrers on a
+  // page that renders their full shipping address.
+  //
+  // Anyone without the cookie — including the customer on another device —
+  // re-enters through /order-lookup, which re-establishes it.
+  const granted = await readGrantedOrderIds();
+  const order = await findOrderByNumberForIds(orderNumber, granted);
 
-  const order = await findOrderByNumber(orderNumber, emailParam);
+  // 404, not a redirect to the lookup form: a distinguishable response would
+  // confirm which order numbers exist.
   if (!order) notFound();
 
-  const address = order.shippingAddress as Address;
+  const address = order.shippingAddress;
 
   return (
     <div className={styles.page}>
-      <p className={styles.status}>{STATUS_COPY[order.status] ?? order.status}</p>
+      <p className={styles.status}>
+        {STATUS_COPY[order.status] ?? order.status}
+      </p>
       <h1 className={styles.number}>{formatOrderNumber(order.orderNumber)}</h1>
 
       {order.status === "pending" && <PendingNotice />}
 
       {order.status === "paid" && (
-        <p style={{ marginTop: "var(--space-3)", color: "var(--text-dim)" }}>
+        <p className={styles.thanks}>
           Thank you. We&apos;ll email you when it ships.
         </p>
       )}
@@ -5356,7 +5511,9 @@ export default async function OrderPage({
         <div className={styles.row}>
           <span>Shipping</span>
           <span>
-            {order.shippingCents === 0 ? "Free" : formatCents(order.shippingCents)}
+            {order.shippingCents === 0
+              ? "Free"
+              : formatCents(order.shippingCents)}
           </span>
         </div>
         <div className={styles.row}>
@@ -5408,6 +5565,7 @@ Create `src/app/(store)/order-lookup/actions.ts`:
 
 import { redirect } from "next/navigation";
 import { findOrderByNumber, parseOrderNumber } from "@/lib/orders";
+import { grantOrderAccess } from "@/lib/orders/access";
 
 export type LookupState = { error?: string };
 
@@ -5429,7 +5587,11 @@ export async function lookupOrderAction(
     return { error: "We couldn't find that order. Check both fields." };
   }
 
-  redirect(`/order/${order.orderNumber}?email=${encodeURIComponent(email)}`);
+  // The email proved ownership here; from now on the cookie carries it, so
+  // the address never has to travel in a URL.
+  await grantOrderAccess(order.id);
+
+  redirect(`/order/${order.orderNumber}`);
 }
 ```
 
@@ -5534,7 +5696,12 @@ export default defineConfig({
   webServer: {
     command: "npm run dev",
     url: "http://localhost:3000",
-    reuseExistingServer: true,
+    // Locally, reuse whatever server is already up. In CI always start a
+    // fresh one: `next build` and `next dev` share the .next directory, and a
+    // dev server left running across a build can serve pages that render
+    // correctly while Server Action POSTs silently no-op, which shows up as a
+    // baffling assertion failure rather than an error.
+    reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
 });
@@ -5566,7 +5733,26 @@ Create `e2e/checkout.spec.ts`:
 ```ts
 import { test, expect } from "@playwright/test";
 
-test("a guest can buy a bottle", async ({ page }) => {
+/**
+ * Paying requires a real Stripe test key. With the placeholder in .env the
+ * tax call fails and checkout never reaches the Payment Element, so the
+ * payment leg is skipped rather than left failing for a reason that has
+ * nothing to do with the code under test.
+ */
+const STRIPE_KEYS_ARE_REAL =
+  (process.env.STRIPE_SECRET_KEY ?? "").length > 40 &&
+  !(process.env.STRIPE_SECRET_KEY ?? "").includes("placeholder");
+
+const ADDRESS = {
+  Email: "buyer@example.com",
+  "Full name": "Test Buyer",
+  Address: "1 Powder Lane",
+  City: "Bozeman",
+  State: "MT",
+  ZIP: "59715",
+};
+
+async function addBottleToCart(page: import("@playwright/test").Page) {
   await page.goto("/shop");
   await expect(page.getByText("Coldsmoke Eau de Toilette")).toBeVisible();
 
@@ -5575,24 +5761,80 @@ test("a guest can buy a bottle", async ({ page }) => {
   await page.getByRole("button", { name: "Add to cart" }).click();
 
   await expect(page).toHaveURL(/\/cart/);
+}
+
+test("a guest can fill a cart and reach the checkout form", async ({ page }) => {
+  await addBottleToCart(page);
+
+  await expect(page.getByText("$45.00").first()).toBeVisible();
+  // $45 is under the $50 free-shipping threshold.
+  await expect(page.getByText("$6.00").first()).toBeVisible();
+
+  await page.getByRole("link", { name: "Checkout" }).click();
+  await expect(page).toHaveURL(/\/checkout/);
+
+  for (const [label, value] of Object.entries(ADDRESS)) {
+    await page.getByLabel(label, { exact: true }).fill(value);
+  }
+
+  await expect(
+    page.getByRole("button", { name: "Continue to payment" }),
+  ).toBeEnabled();
+});
+
+test("the cart survives a reload and totals recalculate", async ({ page }) => {
+  await addBottleToCart(page);
+
+  await page.getByLabel(/^Quantity of /).fill("2");
+  await page.getByRole("button", { name: "Update" }).click();
+
+  // Wait for the SERVER-rendered total before reloading, or the reload races
+  // the re-render and reads the pre-update cart.
+  //
+  // Not the input's value: it is uncontrolled, so it still holds the "2" that
+  // was just typed whether or not the action landed. Asserting it passes
+  // either way, which is worse than not asserting at all.
+  await expect(page.getByText("$90.00").first()).toBeVisible();
+
+  await page.reload();
+  // Still $90 after a round trip, and two bottles clears free shipping.
+  await expect(page.getByText("$90.00").first()).toBeVisible();
+  await expect(page.getByText("Free")).toBeVisible();
+});
+
+test("an empty cart cannot reach checkout", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto("/checkout");
+  await expect(page).toHaveURL(/\/cart/);
+  await expect(page.getByText("Your cart is empty.")).toBeVisible();
+});
+
+test("a guest can buy a bottle", async ({ page }) => {
+  test.skip(
+    !STRIPE_KEYS_ARE_REAL,
+    "Needs a real STRIPE_SECRET_KEY; .env holds a placeholder.",
+  );
+
+  await addBottleToCart(page);
   await expect(page.getByText("$45.00").first()).toBeVisible();
 
   await page.getByRole("link", { name: "Checkout" }).click();
   await expect(page).toHaveURL(/\/checkout/);
 
-  await page.getByLabel("Email").fill("buyer@example.com");
-  await page.getByLabel("Full name").fill("Test Buyer");
-  await page.getByLabel("Address").fill("1 Powder Lane");
-  await page.getByLabel("City").fill("Bozeman");
-  await page.getByLabel("State").fill("MT");
-  await page.getByLabel("ZIP").fill("59715");
+  for (const [label, value] of Object.entries(ADDRESS)) {
+    await page.getByLabel(label, { exact: true }).fill(value);
+  }
 
   await page.getByRole("button", { name: "Continue to payment" }).click();
 
   // The Payment Element renders in a Stripe-hosted iframe.
   const stripeFrame = page.frameLocator("iframe[title*='payment']").first();
-  await stripeFrame.getByPlaceholder("1234 1234 1234 1234").fill("4242424242424242");
-  await stripeFrame.getByPlaceholder("MM / YY").fill("12" + String(new Date().getFullYear() + 2).slice(-2));
+  await stripeFrame
+    .getByPlaceholder("1234 1234 1234 1234")
+    .fill("4242424242424242");
+  await stripeFrame
+    .getByPlaceholder("MM / YY")
+    .fill("12" + String(new Date().getFullYear() + 2).slice(-2));
   await stripeFrame.getByPlaceholder("CVC").fill("123");
   await stripeFrame.getByPlaceholder("12345").fill("59715");
 
