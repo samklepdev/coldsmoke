@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
+import { takeDelivery } from "@/lib/email/delivery";
 
 const schema = z.object({
   name: z.string().trim().min(1, "Enter your name."),
@@ -15,6 +16,8 @@ const schema = z.object({
 export type SignUpState =
   | { status: "idle" }
   | { status: "sent"; email: string }
+  /** The account exists but the confirmation email was rejected. */
+  | { status: "undelivered"; email: string }
   | { status: "error"; error: string; fieldErrors?: Record<string, string> };
 
 export async function signUpAction(
@@ -57,6 +60,19 @@ export async function signUpAction(
     body: { name, email, password },
     headers: await headers(),
   });
+
+  /**
+   * Only say the email is on its way if it actually was.
+   *
+   * `undefined` means no send was attempted in this request -- the duplicate
+   * path above, where staying silent is the whole point -- so it is treated
+   * as success. An explicit `false` means Resend rejected the message, and
+   * saying "check your email" then leaves the customer waiting for mail that
+   * does not exist.
+   */
+  if (takeDelivery(email) === false) {
+    return { status: "undelivered", email };
+  }
 
   return { status: "sent", email };
 }

@@ -123,6 +123,34 @@ describe("signUpAction", () => {
     expect(second).toEqual({ status: "sent", email: "buyer@example.com" });
   });
 
+  it("says so when the verification email could not be sent", async () => {
+    // The defect this covers: an unverified sending domain made Resend reject
+    // every message, and sign-up still said "check your email". The customer
+    // is left waiting for mail that does not exist, with nothing to act on.
+    // Simulated at the send itself, so this exercises the real path:
+    // hook -> recordDelivery -> takeDelivery -> state.
+    sendVerificationEmail.mockResolvedValueOnce({ delivered: false });
+
+    const state = await signUpAction({ status: "idle" }, form(VALID));
+
+    expect(state).toMatchObject({ status: "undelivered", email: VALID.email });
+  });
+
+  it("still creates the account when the email fails", async () => {
+    // The account is real -- Better Auth created it before the send was
+    // attempted. Telling them to request a new link is the honest advice,
+    // and it only works because the account exists.
+    sendVerificationEmail.mockResolvedValueOnce({ delivered: false });
+
+    await signUpAction({ status: "idle" }, form(VALID));
+
+    const rows = await ctx.db
+      .select()
+      .from(user)
+      .where(eq(user.email, VALID.email));
+    expect(rows).toHaveLength(1);
+  });
+
   it("tells the existing account holder by email instead", async () => {
     await signUpAction({ status: "idle" }, form(VALID));
     sendExistingAccountEmail.mockClear();

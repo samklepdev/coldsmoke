@@ -22,6 +22,20 @@ export function SignUpForm() {
     );
   }
 
+  if (state.status === "undelivered") {
+    return (
+      <p role="alert" className={styles.error}>
+        Your account was created, but we could not send the confirmation email
+        to {state.email}. Nothing is wrong with your account —{" "}
+        <Link href={`/verify-email?email=${encodeURIComponent(state.email)}`}>
+          ask for another link
+        </Link>
+        , or <Link href="/contact">contact us</Link> if it still does not
+        arrive.
+      </p>
+    );
+  }
+
   return (
     <form action={action} className={styles.form}>
       <Field

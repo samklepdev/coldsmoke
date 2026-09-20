@@ -9,6 +9,7 @@ import {
   sendPasswordResetEmail,
   sendExistingAccountEmail,
 } from "@/lib/email/auth";
+import { recordDelivery } from "@/lib/email/delivery";
 import { claimGuestOrders } from "@/lib/orders/claim";
 
 /**
@@ -64,7 +65,11 @@ export const auth = betterAuth({
     // One code path for post-sign-in work is worth one extra sign-in.
     autoSignInAfterVerification: false,
     sendVerificationEmail: async ({ user, url }) => {
-      await sendVerificationEmail({ to: user.email, url });
+      const { delivered } = await sendVerificationEmail({ to: user.email, url });
+      // Better Auth discards what this hook returns and swallows what it
+      // throws, so the result is handed to the Server Action out of band.
+      // Without it sign-up reports success for mail that was rejected.
+      recordDelivery(user.email, delivered);
     },
     /**
      * The moment the address stops being a claim and becomes proof.
