@@ -2161,7 +2161,7 @@ git commit -m "feat: transactional inventory with reservation expiry"
 ## Task 7: Cart identity and line management
 
 **Files:**
-- Create: `src/lib/cookies.ts`, `src/lib/cart/index.ts`, `src/lib/cart/cart.test.ts`
+- Create: `src/lib/cookies.ts`, `src/lib/cart/limits.ts`, `src/lib/cart/index.ts`, `src/lib/cart/cart.test.ts`
 
 **Interfaces:**
 - Consumes: `db`, `carts`, `cartItems`, `getProductsByIds`, `quote`
@@ -2321,6 +2321,28 @@ describe("cart lines", () => {
 Run: `npm test -- src/lib/cart`
 Expected: FAIL — `Failed to resolve import "./index"`
 
+- [ ] **Step 2b: Extract the quantity limit to its own module**
+
+Create `src/lib/cart/limits.ts`:
+
+```ts
+/**
+ * Cart limits, kept free of server-only imports.
+ *
+ * `@/lib/cart` pulls in next/headers and the Postgres client, so a Client
+ * Component importing a constant from it drags fs/net/tls and the database
+ * driver into the browser bundle and the build fails. Same reason
+ * `src/lib/cookies.ts` exists.
+ */
+
+/**
+ * Per-line ceiling shared by the quantity controls and the actions that write
+ * them. cart_items.quantity is int4 with no CHECK constraint, so an unbounded
+ * value would eventually overflow on the `quantity + n` upsert in addItem.
+ */
+export const MAX_LINE_QUANTITY = 99;
+```
+
 - [ ] **Step 3: Implement the cart module**
 
 Create `src/lib/cart/index.ts`:
@@ -2338,12 +2360,7 @@ export { CART_COOKIE };
 
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
-/**
- * Per-line ceiling shared by the quantity inputs and the actions that write
- * them. cart_items.quantity is int4 with no CHECK constraint, so an unbounded
- * value would eventually overflow on the `quantity + n` upsert in addItem.
- */
-export const MAX_LINE_QUANTITY = 99;
+export { MAX_LINE_QUANTITY } from "./limits";
 
 /**
  * Reads the caller's cart id without creating one. Safe to call while
