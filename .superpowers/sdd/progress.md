@@ -136,3 +136,21 @@ QUEUED small fix (apply when src/lib/orders is free):
   sets fulfilled until the admin plan), but once fulfillment ships, a late
   payment_intent.succeeded for a fulfilled order would wrongly throw. Treat
   'fulfilled' like 'paid' -> return null.
+Task 10: COMPLETE (commit 91859c0, review clean, 0 Critical/Important)
+  - Deviation accepted: JSX form <OrderConfirmation order={order} /> instead of
+    the brief's function-call form; resend's types expect a ReactElement.
+    Required index.ts -> index.tsx.
+  - Verified: getResend() is INSIDE the try, so a missing RESEND_API_KEY cannot
+    escape and fail the Stripe webhook. Colour hexes match tokens.css exactly.
+  - Template rendered to HTML and checked for order number, items, total, address.
+Controller commit ef0b9cf: APPROVED separately.
+  - markOrderPaid treats 'fulfilled' as idempotent alongside 'paid'. Reviewer
+    confirmed it cannot mask a stranded payment — any path to fulfilled must
+    pass through paid first.
+  - getCatalogProductById correct; zero callers until Task 14 consumes it.
+
+QUEUED small fix (batch with the next src/lib change):
+  orders.shippingAddress / billingAddress are jsonb with no .$type<Address>(),
+  so every read casts `as Address` with nothing validating the shape. Adding
+  .$type<Address>() to the schema is type-only (no migration) and removes the
+  blind casts. A malformed address currently renders blank rather than erroring.
