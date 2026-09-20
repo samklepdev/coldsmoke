@@ -1,0 +1,45 @@
+.list {
+  display: grid;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+  /* A <ul> for the semantics, not for the bullets: these are cards. The
+     prose styles in ContentPage indent and mark list items, which is right
+     for a paragraph list and wrong for this one. */
+  list-style: none;
+  padding-left: 0;
+}
+
+.address {
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+}
+
+.default {
+  border-color: var(--line-bright);
+}
+
+.badge {
+  font-size: 0.62rem;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.form {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 26rem;
+  /* The heading above sits flush against the first label without this. */
+  margin-top: var(--space-4);
+}
+
+.row {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}

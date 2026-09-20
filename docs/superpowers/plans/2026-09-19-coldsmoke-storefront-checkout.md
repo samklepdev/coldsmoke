@@ -435,7 +435,9 @@ import {
  * clobber hand-written tables. Re-exported here so `@/lib/db/schema` stays the
  * single import for every table in the application.
  */
-export { user, session, account, verification } from "./auth-schema";
+import { user, session, account, verification } from "./auth-schema";
+
+export { user, session, account, verification };
 
 export const orderStatus = pgEnum("order_status", [
   "pending",
@@ -668,7 +670,50 @@ export const contactMessages = pgTable(
   (t) => [index("contact_messages_rate_idx").on(t.ipHash, t.createdAt)],
 );
 
+/**
+ * Saved addresses for signed-in customers.
+ *
+ * Deliberately not referenced by orders. An order carries a jsonb snapshot of
+ * where it actually shipped, so editing or deleting a saved address cannot
+ * rewrite shipping history.
+ */
+export const addresses = pgTable(
+  "addresses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    label: text("label"),
+    name: text("name").notNull(),
+    line1: text("line1").notNull(),
+    line2: text("line2"),
+    city: text("city").notNull(),
+    state: text("state").notNull(),
+    postalCode: text("postal_code").notNull(),
+    country: text("country").notNull().default("US"),
+    phone: text("phone"),
+    isDefault: boolean("is_default").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("addresses_user_idx").on(t.userId),
+    // At most one default per customer, enforced by the database rather than
+    // by remembering to clear the old one. A partial unique index is the only
+    // version of this rule that a concurrent write cannot slip past.
+    uniqueIndex("addresses_one_default_idx")
+      .on(t.userId)
+      .where(sql`${t.isDefault}`),
+  ],
+);
+
 export type Product = typeof products.$inferSelect;
+export type SavedAddress = typeof addresses.$inferSelect;
 export type ProductImage = typeof productImages.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type OrderItem = typeof orderItems.$inferSelect;
@@ -1694,7 +1739,7 @@ export async function testDb() {
       await client`
         TRUNCATE order_items, orders, cart_items, carts, inventory_adjustments,
                  inventory, product_images, products, discount_codes, stripe_events,
-                 contact_messages, session, account, verification, "user"
+                 contact_messages, addresses, session, account, verification, "user"
         RESTART IDENTITY CASCADE`;
     },
     async close() {
