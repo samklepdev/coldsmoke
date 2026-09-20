@@ -165,3 +165,14 @@ Task 11: complete (commit 6a10c81) + controller a11y fix.
     from --line to --line-bright. --line stays as-is for dividers, which are
     decorative and exempt from 1.4.11.
   - Plan patched so Tasks 12/13 quantity inputs use --line-bright too.
+Task 11: COMPLETE (commit 6a10c81 + a11y fix 8db2b76, review clean)
+  - Reviewer INDEPENDENTLY recomputed the contrast fix: 5.36 / 4.84 / 3.46 /
+    3.13, matching the controller's figures. Confirmed no other failing pair;
+    remaining --line uses are decorative dividers, outside WCAG 1.4.11.
+  - Verified: layout never imports getOrCreateCartId (no cookie write during
+    render); Button/ButtonLink never nest; Field's aria-describedby cannot
+    dangle because error span and attributes share one condition.
+  - Minor deferred: Wordmark's aria-label on the span is redundant (duplicates
+    its own text, and SiteHeader's Link aria-label overrides it) — remove it.
+  - Minor noted: --line-bright on --panel is 3.13:1, only 0.13 over the floor.
+    Revisit if --panel is ever lightened.
