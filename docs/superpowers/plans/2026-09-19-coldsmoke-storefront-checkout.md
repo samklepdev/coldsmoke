@@ -3168,13 +3168,33 @@ export async function createPendingOrder(args: {
     return created;
   });
 
-  const intent = await payments.createOrUpdateIntent({
-    paymentIntentId: reusable?.stripePaymentIntentId ?? null,
-    amountCents: final.totalCents,
-    email,
-    orderId: order.id,
-    orderNumber: order.orderNumber,
-  });
+  let intent;
+  try {
+    intent = await payments.createOrUpdateIntent({
+      paymentIntentId: reusable?.stripePaymentIntentId ?? null,
+      amountCents: final.totalCents,
+      email,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+    });
+  } catch (err) {
+    // The reservation transaction has already committed. Leaving it alone
+    // holds stock against a payment that will never arrive until the expiry
+    // sweep reclaims it — up to RESERVATION_WINDOW_MS of a small catalogue
+    // made unsellable by an error we already know happened.
+    try {
+      await cancelReservedOrder(order.id);
+    } catch (cleanupErr) {
+      // The sweep is still the backstop, so a failed cleanup is recoverable.
+      // What is not recoverable is hiding the error the caller needs to see,
+      // so this is logged and swallowed rather than thrown.
+      console.error("[orders] could not release a failed order's reservation", {
+        orderId: order.id,
+        cause: cleanupErr,
+      });
+    }
+    throw err;
+  }
 
   // Return the row as it stands AFTER the payment intent id is written.
   // Returning the pre-update `order` would hand the caller a row whose
@@ -3186,6 +3206,23 @@ export async function createPendingOrder(args: {
     .returning();
 
   return { order: withIntent, clientSecret: intent.clientSecret };
+}
+
+/**
+ * Undoes a committed reservation whose order can no longer proceed.
+ *
+ * Deliberately the same end state the expiry sweep produces — cancelled, with
+ * the stock given back — so an order cleaned up here is indistinguishable from
+ * one the sweep reclaimed, and nothing downstream needs a second case.
+ */
+async function cancelReservedOrder(orderId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await releaseStock(tx, orderId);
+    await tx
+      .update(orders)
+      .set({ status: "cancelled", cancelledAt: new Date() })
+      .where(and(eq(orders.id, orderId), eq(orders.status, "pending")));
+  });
 }
 
 /**
