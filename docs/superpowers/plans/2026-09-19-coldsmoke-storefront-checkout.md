@@ -2445,8 +2445,8 @@ export async function getCartId(): Promise<string | null> {
 
 /**
  * Resolves the caller's cart, creating one if needed. Guest carts are
- * identified by a uuid in an httpOnly cookie; Plan 2 attaches userId on
- * sign-in and merges.
+ * identified by a uuid in an httpOnly cookie; `mergeGuestCart` in ./merge
+ * attaches userId and folds a guest cart into the customer's on sign-in.
  *
  * WRITES A COOKIE — callable only from a Server Action or Route Handler.
  * Server Components must use getCartId() instead.
