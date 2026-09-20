@@ -2,7 +2,13 @@ import Link from "next/link";
 import { Wordmark } from "./ui/Wordmark";
 import styles from "./SiteHeader.module.css";
 
-export function SiteHeader({ cartCount = 0 }: { cartCount?: number }) {
+export function SiteHeader({
+  cartCount = 0,
+  signedIn = false,
+}: {
+  cartCount?: number;
+  signedIn?: boolean;
+}) {
   return (
     <header className={styles.header}>
       <Link href="/" aria-label="Coldsmoke home">
@@ -13,6 +19,9 @@ export function SiteHeader({ cartCount = 0 }: { cartCount?: number }) {
         <Link href="/shop">Shop</Link>
         <Link href="/the-scent">The Scent</Link>
         <Link href="/about">About</Link>
+        <Link href={signedIn ? "/account/orders" : "/sign-in"}>
+          {signedIn ? "Account" : "Sign in"}
+        </Link>
       </nav>
 
       <Link href="/cart" className={styles.cart}>

@@ -4172,7 +4172,13 @@ import Link from "next/link";
 import { Wordmark } from "./ui/Wordmark";
 import styles from "./SiteHeader.module.css";
 
-export function SiteHeader({ cartCount = 0 }: { cartCount?: number }) {
+export function SiteHeader({
+  cartCount = 0,
+  signedIn = false,
+}: {
+  cartCount?: number;
+  signedIn?: boolean;
+}) {
   return (
     <header className={styles.header}>
       <Link href="/" aria-label="Coldsmoke home">
@@ -4183,6 +4189,9 @@ export function SiteHeader({ cartCount = 0 }: { cartCount?: number }) {
         <Link href="/shop">Shop</Link>
         <Link href="/the-scent">The Scent</Link>
         <Link href="/about">About</Link>
+        <Link href={signedIn ? "/account/orders" : "/sign-in"}>
+          {signedIn ? "Account" : "Sign in"}
+        </Link>
       </nav>
 
       <Link href="/cart" className={styles.cart}>
@@ -4260,16 +4269,18 @@ Create `src/app/(store)/layout.tsx`:
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
 import { getCartId, getCartLines } from "@/lib/cart";
+import { getSessionUser } from "@/lib/auth/session";
 
 export default async function StoreLayout({ children }: LayoutProps<"/">) {
   // Read-only: a layout renders as a Server Component and may not set cookies.
   const cartId = await getCartId();
   const lines = cartId ? await getCartLines(cartId) : [];
   const count = lines.reduce((sum, line) => sum + line.quantity, 0);
+  const user = await getSessionUser();
 
   return (
     <>
-      <SiteHeader cartCount={count} />
+      <SiteHeader cartCount={count} signedIn={user !== null} />
       <main>{children}</main>
       <SiteFooter />
     </>
