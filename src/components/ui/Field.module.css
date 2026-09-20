@@ -1,0 +1,34 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  font-size: 0.68rem;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.input {
+  width: 100%;
+  padding: 0.8rem 0.9rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text-bright);
+  border-radius: 2px;
+}
+
+.input:focus {
+  border-color: var(--silver-start);
+}
+
+.invalid {
+  border-color: var(--danger);
+}
+
+.error {
+  font-size: 0.8rem;
+  color: var(--danger);
+}
