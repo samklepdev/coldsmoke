@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { getProductBySlug } from "@/lib/catalog";
@@ -24,11 +25,25 @@ export default async function ProductPage({
   if (!product) notFound();
 
   const soldOut = product.available <= 0;
+  const image = product.images[0];
 
   return (
     <div className={styles.page}>
       <div className={styles.visual}>
-        <Wordmark size={24} />
+        {image ? (
+          <Image
+            src={image.url}
+            alt={image.alt}
+            // fill, not width/height: the URL comes from the database, so the
+            // intrinsic size is not known at build time.
+            fill
+            className={styles.image}
+            sizes="(max-width: 640px) 100vw, 45vw"
+            priority
+          />
+        ) : (
+          <Wordmark size={24} />
+        )}
       </div>
 
       <div>

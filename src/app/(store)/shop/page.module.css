@@ -27,6 +27,22 @@
   transition: border-color 160ms ease;
 }
 
+/* No border of its own: the card already has one, and nesting a second inside
+   it reads as a box in a box. The gradient alone separates art from panel. */
+.thumb {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  margin-bottom: var(--space-4);
+  overflow: hidden;
+  background: linear-gradient(180deg, #17171b, #0a0a0c);
+  display: grid;
+  place-items: center;
+}
+
+.thumbImage {
+  object-fit: contain;
+}
+
 .card:hover {
   border-color: var(--line-bright);
 }

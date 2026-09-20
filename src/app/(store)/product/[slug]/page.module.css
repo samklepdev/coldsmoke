@@ -7,12 +7,22 @@
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
 }
 
+/* Square, because the product imagery is square. A 3/4 box either crops the
+   art or letterboxes it, and the brand card cannot survive a crop. */
 .visual {
-  aspect-ratio: 3 / 4;
+  position: relative;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
   background: linear-gradient(180deg, #17171b, #0a0a0c);
   border: 1px solid var(--line);
   display: grid;
   place-items: center;
+}
+
+.image {
+  /* contain, not cover: the brand card carries an inset border frame and type
+     that runs nearly the full width, and cover shaves both off the edges. */
+  object-fit: contain;
 }
 
 .name {
