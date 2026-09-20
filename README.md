@@ -77,9 +77,10 @@ in the shipped file — and the test caps how many may exist.
 The dev and test databases are separate Compose projects on separate ports and
 volumes. Starting one does not touch the other.
 
-`npm run test:e2e` runs three tests covering shop through to the checkout form.
-A fourth test pays with a card and skips itself unless `STRIPE_SECRET_KEY`
-holds a real key — see below.
+`npm run test:e2e` runs five tests, the last of which pays with a real Stripe
+test card and waits for the confirmation page to reach "Confirmed" — so it
+only passes while `stripe listen` is forwarding. It skips itself when
+`STRIPE_SECRET_KEY` is missing or a placeholder.
 
 ## Webhooks in development
 
@@ -106,7 +107,9 @@ STRIPE_API_KEY="$STRIPE_SECRET_KEY" stripe listen --events ... --forward-to ...
 
 ## Current state
 
-Plan 1 is implemented end to end, but two things are worth knowing:
+Plan 1 is implemented and verified end to end against real Stripe: a test card
+pays, the webhook marks the order paid, stock commits, the cart clears, and a
+replayed event changes nothing. Four things are still worth knowing.
 
 - **Checkout requires Stripe Tax to be active.** `createPendingOrder` calls
   `calculateTax` and deliberately blocks if it fails — charging a guessed tax
@@ -120,6 +123,11 @@ Plan 1 is implemented end to end, but two things are worth knowing:
   A fresh account reports `status: pending` with
   `missing_fields: ["head_office"]`; set the origin address under
   Dashboard → Settings → Tax. This is an account setting, not a code change.
+- **No sales tax is currently collected.** The account has an origin address
+  but **zero tax registrations**, so `calculateTax` returns 0 for every
+  destination. That is correct behaviour — Stripe only charges where you are
+  registered — but it means orders collect nothing today. Add registrations
+  under Dashboard → Tax → Registrations before going live.
 - **`/the-scent` and `/about` are linked but do not exist.** Both appear in the
   site header, and `/the-scent` in the home hero. They 404 today; the pages
   come with Plan 4.

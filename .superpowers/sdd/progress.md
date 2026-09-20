@@ -493,3 +493,60 @@ BLOCKED — needs an account setting only the owner can make:
   the paid transition, and the Playwright payment test remain unverified.
   The business has no address yet — the brand plan still has [Street],
   [City, ST ZIP] placeholders and the LLC is not formed.
+
+## Stripe end-to-end VERIFIED (2026-09-20)
+
+Owner set the Tax head office (Houston, TX). Everything previously blocked is
+now confirmed against real Stripe.
+
+Task 14 Step 4, Task 15 Steps 4-5, Task 17 — all complete:
+  - Real card 4242… pays. Order 1013: status paid, inventory_state committed,
+    paid_at set, on_hand 50 -> 49, cart cleared, confirmation page shows
+    "Confirmed".
+  - Replay of the same event (`stripe events resend`) -> 200, on_hand and
+    reserved unchanged, still one ledger row. Idempotency proven, not assumed.
+  - Cron sweep exercised live for the first time: 401 with no header, 401 with
+    a wrong secret, 200 with the real CRON_SECRET, releasing 9 expired
+    reservations (reserved 12 -> 3, 9 orders cancelled, on_hand untouched).
+  - e2e now 5/5 including the real payment.
+
+FOUR DEFECTS FOUND, all in my own work:
+
+1. The Playwright payment test could never have run. Its skip guard reads
+   process.env.STRIPE_SECRET_KEY, but the Playwright runner does not load
+   .env — only `next dev` does. So it was always undefined and the test
+   skipped itself forever, including with real keys. Fixed by importing
+   dotenv/config in playwright.config.ts. Same family as the uncontrolled-
+   input assertion: a check that silently never fires.
+
+2. CART QUANTITY BUG, reported by the owner and reproduced. A cleared
+   quantity box submitted happily and nothing changed — no error, no update.
+   I introduced this in ae3f8a4: setQuantityAction refuses unparseable input
+   by re-rendering instead of deleting the line, which is right, but silent.
+   I even wrote a test locking the silence in. Fixed with `required` + `step`
+   on the input, so constraint validation refuses blank the same way it
+   already refused 2.5, -1 and >99. Every invalid case now states a reason.
+   New e2e regression test covers it.
+   NOTE: this is the same symptom I dismissed as a test race yesterday when
+   the flaky test showed header "Cart (2)" beside a $45.00 body. The race was
+   real, but so was a bug sitting next to it.
+
+3. The payment test's Pay click silently missed. Selecting Card expands the
+   Payment Element ~570px, pushing the button from y=688 to y=1261; Playwright's
+   auto-scroll raced the reflow and the click landed on nothing. A missed click
+   is not an error, so it looked like the button did nothing. Fixed with
+   scrollIntoViewIfNeeded + toBeInViewport before clicking.
+
+4. The payment test asserted only the redirect, so it passed while the order
+   was still "Awaiting payment". It now asserts "Confirmed", which is the only
+   assertion that actually proves the webhook marked the order paid.
+
+Also: the Payment Element opens on a method picker (Card, Cash App, Affirm,
+Klarna…), so the card fields do not exist until Card is selected, and two
+iframes share the title "Secure payment input frame" — frameLocator is strict
+and throws, so .first().contentFrame() is required. The plan's placeholder
+guesses were correct; the surrounding steps were not.
+
+OPEN: zero tax registrations, so calculateTax returns 0 for every destination.
+Correct behaviour (Stripe only charges where registered) but it means no sales
+tax is collected. Needs registrations before live. Documented in the README.

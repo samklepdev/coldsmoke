@@ -69,6 +69,32 @@ test("the cart survives a reload and totals recalculate", async ({ page }) => {
   await expect(page.getByText("Free")).toBeVisible();
 });
 
+test("a rejected quantity says why instead of silently doing nothing", async ({
+  page,
+}) => {
+  await addBottleToCart(page);
+
+  const subtotal = async () =>
+    (await page.locator("main").innerText()).match(/Subtotal\s*\$([0-9.,]+)/)?.[1];
+  const quantity = page.getByLabel(/^Quantity of /);
+
+  expect(await subtotal()).toBe("45.00");
+
+  // A cleared box used to submit happily: the server refused to parse it,
+  // re-rendered, and the customer saw no change and no reason why.
+  await quantity.fill("");
+  await page.getByRole("button", { name: "Update" }).click();
+  await expect
+    .poll(async () => quantity.evaluate((el: HTMLInputElement) => el.validationMessage))
+    .not.toBe("");
+  expect(await subtotal()).toBe("45.00");
+
+  // And a valid quantity still goes through.
+  await quantity.fill("3");
+  await page.getByRole("button", { name: "Update" }).click();
+  await expect(page.getByText("$135.00").first()).toBeVisible();
+});
+
 test("an empty cart cannot reach checkout", async ({ page }) => {
   await page.context().clearCookies();
   await page.goto("/checkout");
@@ -94,8 +120,18 @@ test("a guest can buy a bottle", async ({ page }) => {
 
   await page.getByRole("button", { name: "Continue to payment" }).click();
 
-  // The Payment Element renders in a Stripe-hosted iframe.
-  const stripeFrame = page.frameLocator("iframe[title*='payment']").first();
+  // The Payment Element renders in a Stripe-hosted iframe. Two iframes share
+  // the title "Secure payment input frame", so disambiguate with .first()
+  // rather than frameLocator, which is strict and would throw.
+  const stripeFrame = page
+    .locator("iframe[title='Secure payment input frame']")
+    .first()
+    .contentFrame();
+
+  // The account has several payment methods enabled, so the Element opens on
+  // a method picker and the card fields do not exist until Card is chosen.
+  await stripeFrame.getByRole("button", { name: "Card", exact: true }).click();
+
   await stripeFrame
     .getByPlaceholder("1234 1234 1234 1234")
     .fill("4242424242424242");
@@ -105,8 +141,24 @@ test("a guest can buy a bottle", async ({ page }) => {
   await stripeFrame.getByPlaceholder("CVC").fill("123");
   await stripeFrame.getByPlaceholder("12345").fill("59715");
 
-  await page.getByRole("button", { name: /^Pay / }).click();
+  // Selecting Card expands the Element by ~570px, which pushes Pay far below
+  // the fold. Playwright's auto-scroll races that reflow and the click lands
+  // on nothing — silently, because a missed click is not an error. Scroll and
+  // let it settle first.
+  const pay = page.getByRole("button", { name: /^Pay / });
+  await pay.scrollIntoViewIfNeeded();
+  await expect(pay).toBeInViewport();
+  await pay.click();
 
   await expect(page).toHaveURL(/\/order\/\d+/, { timeout: 30_000 });
-  await expect(page.getByText(/CS-\d+/)).toBeVisible();
+
+  // getByText would also match Next's route announcer, which mirrors the
+  // heading into an aria-live region.
+  await expect(page.getByRole("heading", { name: /CS-\d+/ })).toBeVisible();
+
+  // The order lands as "Awaiting payment" and only becomes "Confirmed" once
+  // the webhook marks it paid, so this is the assertion that actually proves
+  // the paid transition rather than just the redirect. Requires
+  // `stripe listen` to be forwarding; PendingNotice polls for ~10s.
+  await expect(page.getByText("Confirmed")).toBeVisible({ timeout: 30_000 });
 });
