@@ -386,3 +386,33 @@ having been ~1-in-4 before.
 
 Lesson to carry: an assertion that cannot fail is indistinguishable from
 green. Check what a guard is actually reading before trusting it.
+
+## Deferred minors from progress.md item 4 (2026-09-20)
+
+1. npm audit — ACCEPTED, not fixed, documented in the README. All 4 moderate
+   findings are GHSA-67mh-4wv8-2f99 (esbuild's DEV SERVER accepts cross-origin
+   requests), reaching us transitively through drizzle-kit, a devDependency
+   used only by `npm run db:generate`. Nothing here starts an esbuild dev
+   server and it never touches a deployed artifact. `npm audit fix --force`
+   installs drizzle-kit@0.18.1 — a downgrade across 13 minor versions that
+   breaks the current config format. Forcing it is worse than the finding.
+2. orders.user_id index — still deferred, and confirmed correct to defer. The
+   column is nullable with no users table and no query filtering on it; an
+   index over an all-NULL column is pure overhead.
+3. Catalog duplication — FIXED. The availability expression is now a single
+   shared `availableExpr` used by all three reads, and the dead `?? 0`
+   coalesce is gone from all three call sites.
+   Task 5's review had verified the no-inventory-row case against a live DB
+   but left NO test, so the claim the coalesce depends on was unpinned. Added
+   src/lib/catalog/catalog.test.ts (10 tests) covering it directly, plus the
+   arithmetic, the zero floor, the numeric type, agreement across all three
+   reads, and the deliberate active-filtering asymmetry (by-id resolves an
+   inactive product; by-slug does not).
+4. Wordmark aria-label — FIXED, removed. It duplicated the element's own text
+   and was overridden by SiteHeader's link label anyway.
+5. --line-bright on --panel at 3.13:1 — no action, correctly a watch item. It
+   passes the 3:1 floor for non-text contrast; the note stands as a warning
+   against lightening --panel.
+
+164 tests, tsc clean, lint clean, 10 routes, e2e 3/3 across three runs.
+40 files now byte-identical to the plan, up from 35 at the start of the day.

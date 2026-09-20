@@ -38,6 +38,21 @@ Two cookie rules worth knowing before editing page code:
 - A `"use server"` module may export only async functions, so cookie names live
   in `src/lib/cookies.ts` rather than beside the actions that use them.
 
+### Order page access
+
+`/order/[number]` takes no credential in the URL. Access comes from an
+httpOnly cookie holding **order ids** — `orders.id` is a v4 UUID, so the
+cookie value is itself the unguessable credential. A cookie naming the
+customer-facing number (`CS-1000`) would be trivially forgeable: httpOnly
+stops page scripts from reading it, but nothing stops a hand-written request
+from sending whatever it likes.
+
+Checkout and `/order-lookup` both grant access; the grant is applied as an
+`inArray` in the SQL `WHERE` clause (`findOrderByNumberForIds`), so no code
+path reads an order without one. A missing credential returns 404 rather than
+redirecting to the lookup form, because a distinguishable response would
+confirm which order numbers exist.
+
 ## Testing
 
 ```bash
@@ -75,6 +90,15 @@ Plan 1 is implemented end to end, but two things are worth knowing:
 - **`/the-scent` and `/about` are linked but do not exist.** Both appear in the
   site header, and `/the-scent` in the home hero. They 404 today; the pages
   come with Plan 4.
+- **`npm audit` reports 4 moderate vulnerabilities, knowingly accepted.** All
+  four are [GHSA-67mh-4wv8-2f99](https://github.com/advisories/GHSA-67mh-4wv8-2f99)
+  — esbuild's *dev server* accepting cross-origin requests — reaching us
+  transitively via `drizzle-kit`, a devDependency used only by
+  `npm run db:generate`. Nothing in this project starts an esbuild dev server,
+  and the advisory never touches a deployed artifact. `npm audit fix --force`
+  resolves it by installing `drizzle-kit@0.18.1`, a downgrade across 13 minor
+  versions that would break the current config format. Re-evaluate when
+  `drizzle-kit` ships a fix that moves forward rather than back.
 
 ## Deployment
 

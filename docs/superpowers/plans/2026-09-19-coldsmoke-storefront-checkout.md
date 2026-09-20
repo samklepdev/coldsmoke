@@ -1424,11 +1424,21 @@ export type CatalogProduct = Product & {
   available: number;
 };
 
+/**
+ * onHand minus reserved, floored at zero. Shared by every catalog read so the
+ * three of them cannot drift apart.
+ *
+ * Postgres GREATEST ignores NULL arguments unless all of them are NULL, so a
+ * product with no inventory row — where the leftJoin supplies NULLs — yields
+ * 0 rather than NULL. Callers therefore do not need to coalesce the result.
+ */
+const availableExpr = sql<number>`GREATEST(${inventory.onHand} - ${inventory.reserved}, 0)`;
+
 export async function getActiveProducts(): Promise<CatalogProduct[]> {
   const rows = await db
     .select({
       product: products,
-      available: sql<number>`GREATEST(${inventory.onHand} - ${inventory.reserved}, 0)`,
+      available: availableExpr,
     })
     .from(products)
     .leftJoin(inventory, eq(inventory.productId, products.id))
@@ -1450,7 +1460,7 @@ export async function getActiveProducts(): Promise<CatalogProduct[]> {
 
   return rows.map((row) => ({
     ...row.product,
-    available: Number(row.available ?? 0),
+    available: Number(row.available),
     images: images.filter((image) => image.productId === row.product.id),
   }));
 }
@@ -1461,7 +1471,7 @@ export async function getProductBySlug(
   const [row] = await db
     .select({
       product: products,
-      available: sql<number>`GREATEST(${inventory.onHand} - ${inventory.reserved}, 0)`,
+      available: availableExpr,
     })
     .from(products)
     .leftJoin(inventory, eq(inventory.productId, products.id))
@@ -1478,14 +1488,15 @@ export async function getProductBySlug(
 
   return {
     ...row.product,
-    available: Number(row.available ?? 0),
+    available: Number(row.available),
     images,
   };
 }
 
 /**
  * Availability-aware lookup by id. Used by checkout to report exactly how many
- * of a product remain when a reservation fails.
+ * of a product remain when a reservation fails, so the customer is told which
+ * line to fix rather than a generic "something sold out".
  */
 export async function getCatalogProductById(
   id: string,
@@ -1493,7 +1504,7 @@ export async function getCatalogProductById(
   const [row] = await db
     .select({
       product: products,
-      available: sql<number>`GREATEST(${inventory.onHand} - ${inventory.reserved}, 0)`,
+      available: availableExpr,
     })
     .from(products)
     .leftJoin(inventory, eq(inventory.productId, products.id))
@@ -1508,7 +1519,7 @@ export async function getCatalogProductById(
     .where(eq(productImages.productId, row.product.id))
     .orderBy(asc(productImages.sortOrder));
 
-  return { ...row.product, available: Number(row.available ?? 0), images };
+  return { ...row.product, available: Number(row.available), images };
 }
 
 /** Used to resolve live prices for cart lines. */
@@ -3360,8 +3371,9 @@ Create `src/components/ui/Wordmark.tsx`:
 ```tsx
 export function Wordmark({ size = 22 }: { size?: number }) {
   return (
+    // No aria-label: it would duplicate the element's own text, and in
+    // SiteHeader the wrapping link's label overrides it anyway.
     <span
-      aria-label="Coldsmoke"
       style={{
         fontSize: size,
         fontWeight: 300,
