@@ -92,3 +92,30 @@ Task 8: implemented (commit b9043fc), review NOT APPROVED — fix QUEUED,
     widened cast in verifyWebhook, contained to stripe.ts.
 Controller fix (commit fb19dbd): added ButtonLink. Four call sites nested
   <Button> inside <Link> — invalid HTML, two tab stops per control.
+Task 9: implemented (commit 74d8e3f), review found 2 Critical — fix in flight.
+  - Critical 1 (CONFIRMED, worse than hypothesised): markOrderPaid inserts the
+    event into stripe_events BEFORE finding the order, then returns null if no
+    pending order matches — webhook 200s, Stripe never retries, event is
+    permanently marked processed. Controller guessed the race was the PI-id
+    write gap; reviewer ruled that out (client cannot confirm before it) and
+    found the REACHABLE path: releaseExpiredReservations cancels an order while
+    Stripe completes a slow payment. Real charge, no order, nothing to
+    reconcile. Reviewer verified db.transaction does a true ROLLBACK, so
+    throwing undoes the ledger insert.
+  - Critical 2: markOrderPaid had ZERO tests. Most safety-critical function.
+  - Important deferred to final review: order unitPriceCents not re-validated
+    inside orders module (holds by caller convention only); no cleanup if the
+    Stripe call fails after the reservation tx commits (relies on expiry sweep);
+    discount-cap-exhausted path is console.warn only, not persisted.
+Task 8 fix: complete (commit 9958a35). 82/82. FakePayments now tracks status and
+  throws PaymentIntentNotUpdatableError like the real adapter.
+Controller fix (6c770a1): out-of-stock path now names the product and clamps the
+  cart line, per spec section 8. Plan previously returned a generic message and
+  corrected nothing.
+
+DEFERRED PRODUCT DECISION for final review:
+  /order/[number]?email=... puts customer email in the URL (history, access
+  logs, referrer) and the page shows the full shipping address. Suggested
+  alternative: short-lived httpOnly cookie for the just-purchased order, email
+  param retained only for the emailed-receipt link. Not fixed — it changes
+  whether order pages are shareable, which is the owner's call.
