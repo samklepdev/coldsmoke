@@ -119,3 +119,20 @@ DEFERRED PRODUCT DECISION for final review:
   alternative: short-lived httpOnly cookie for the just-purchased order, email
   param retained only for the emailed-receipt link. Not fixed — it changes
   whether order pages are shareable, which is the owner's call.
+Task 9: COMPLETE (commits 74d8e3f..138d1f9, APPROVED on re-review, 0 findings)
+  - markOrderPaid now branches on real order state: duplicate event -> null,
+    already paid -> null, pending -> proceed, other status -> StrandedPaymentError,
+    no order -> OrderNotFoundForPaymentError. Both throws are lexically inside
+    the transaction, so the ledger insert rolls back and Stripe retries.
+  - Three independent backstops against double-commit confirmed: explicit branch,
+    UPDATE ... WHERE status='pending', and commitStock's atomic state claim.
+  - Test honesty check: 2 of 6 new tests genuinely fail against old code (the two
+    error paths, incl. real rollback verification over a separate pool); other 4
+    close the zero-coverage gap without diagnosing Critical 1.
+  - Plan fix fe05923: webhook catch must stay broad or the fix is defeated.
+
+QUEUED small fix (apply when src/lib/orders is free):
+  markOrderPaid treats status 'fulfilled' as stranded. Unreachable today (nothing
+  sets fulfilled until the admin plan), but once fulfillment ships, a late
+  payment_intent.succeeded for a fulfilled order would wrongly throw. Treat
+  'fulfilled' like 'paid' -> return null.
