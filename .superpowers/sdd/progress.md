@@ -293,3 +293,161 @@ STILL OPEN for the owner:
      availability SQL across two call sites (Task 5); Wordmark's redundant
      aria-label (Task 11); --line-bright on --panel at 3.13:1, only 0.13 over
      the floor (Task 11).
+
+## Post-completion: propagating fixes back into the plan (2026-09-20)
+
+Caught a process failure of my own. Tasks 3, 4, 9 and 11 each patched the plan
+after a review found a defect in it ("Plan file patched to match so a re-run
+does not reproduce the bug"). I fixed five defects across Tasks 12-18 and
+patched NONE of them back. The plan still contained every one.
+
+Propagated all five into the plan and the task briefs:
+  1. Number.isFinite quantity guard -> parseQuantity (plan + task-12-brief),
+     plus MAX_LINE_QUANTITY in the cart module (plan + task-7-brief) and the
+     product page's max attribute.
+  2. z.string().length(2) -> letters-only regex + uppercase transform
+     (plan + task-14-brief).
+  3. Cron `Bearer ${process.env.CRON_SECRET}` -> fail-closed + timingSafeEqual
+     (plan + task-15-brief).
+  4. Inline post-payment side effects -> completePaidOrder, isolated from the
+     outer catch (plan + task-15-brief).
+  5. createPendingOrder returning the pre-update row -> .returning()
+     (plan + task-9-brief; the first sweep missed the brief, the verification
+     step caught it).
+  6. Typed jsonb addresses .$type<Address>() (plan + task-2-brief).
+
+Verified by extracting the plan's code blocks and diffing against the shipped
+source, not by eyeballing: src/app/api/stripe/webhook/route.ts and
+src/app/api/cron/release-reservations/route.ts are now byte-identical to the
+plan. All five defect patterns are absent from the plan and every task brief.
+
+Also fixed: the plan told the implementer to create src/lib/email/index.ts,
+but Task 10's accepted deviation renamed it to .tsx (resend's `react` field
+wants a ReactElement, so the file contains JSX). Plan and task-10-brief now
+say .tsx with the reason inline, and use the JSX call form.
+
+### Systemic finding — plan drift is wider than these five
+
+Diffing every "Create `path`" block in the plan against the repo:
+  35 files byte-identical, 31 files differ, 0 files missing.
+
+The 31 are accumulated accepted deviations and review fixes from Tasks 1-11
+plus my own from 12-18, none propagated. Biggest gaps: orders/index.ts (~63
+changed lines), payments/stripe.ts (~51), inventory tests (~96),
+CheckoutForm.tsx (~105), e2e/checkout.spec.ts (~85). The plan is a reliable
+guide to 35 files and an actively misleading one for 31.
+
+NOT fixed — the script to re-check this lives at scratchpad/plan_drift.py and
+is cheap to re-run. Deciding whether the plan should be a living document or
+a historical artefact is the owner's call.
+
+## Order page access: cookie instead of email-in-URL (2026-09-20)
+
+Owner decision on the deferred Task 9 item: short-lived httpOnly cookie.
+
+The email template turned out to contain NO link, so ?email= existed purely
+for two in-app flows I control. That let the parameter be removed entirely
+rather than kept as a fallback.
+
+Design note worth keeping: the cookie holds order IDS, not order numbers.
+orders.id is a v4 UUID, so the cookie value is itself the credential. A cookie
+naming "CS-1000" would be trivially forgeable — httpOnly stops page scripts,
+not a hand-written request. The grant check is an inArray in the WHERE clause
+(findOrderByNumberForIds), so there is no code path that reads an order
+without a credential, and an empty grant list short-circuits rather than
+degrading to "no filter".
+
+Verified over HTTP against the running app:
+  ?email=correct 404 | ?email=wrong 404 | no credential 404
+  correct cookie 200 | forged cookie 404 | empty 404 | other order's id 404
+11 new tests on the access module, plus grant assertions in the checkout and
+lookup action suites. 154 tests total.
+
+Propagated into the plan and briefs in the same pass this time (tasks 9, 13,
+14, 16). 39 files now byte-identical to the plan, up from 35.
+
+### Flaky e2e test — found, misdiagnosed once, then fixed
+
+"the cart survives a reload" failed ~1 run in 4. First diagnosis was wrong: I
+called it environmental (stale .next after interleaving next build and next
+dev) because I could not reproduce it, and it had passed 8 runs straight.
+Kept running it, and it failed 1-in-6 — genuinely flaky, not environmental.
+
+The guard I had added first was worse than nothing:
+  await expect(page.getByLabel(/^Quantity of /)).toHaveValue("2");
+The quantity input is UNCONTROLLED, so it holds the typed "2" whether or not
+the action landed. That assertion passes in both the good and bad cases.
+
+The failure snapshot showed the real shape: header read "Cart (2)" while the
+body still read quantity 1 / Subtotal $45.00 — the write had landed, and the
+test was racing the server re-render, not the database. Fixed by waiting on
+the server-rendered total ($90.00) before reloading. 15/15 clean after,
+having been ~1-in-4 before.
+
+Lesson to carry: an assertion that cannot fail is indistinguishable from
+green. Check what a guard is actually reading before trusting it.
+
+## Deferred minors from progress.md item 4 (2026-09-20)
+
+1. npm audit — ACCEPTED, not fixed, documented in the README. All 4 moderate
+   findings are GHSA-67mh-4wv8-2f99 (esbuild's DEV SERVER accepts cross-origin
+   requests), reaching us transitively through drizzle-kit, a devDependency
+   used only by `npm run db:generate`. Nothing here starts an esbuild dev
+   server and it never touches a deployed artifact. `npm audit fix --force`
+   installs drizzle-kit@0.18.1 — a downgrade across 13 minor versions that
+   breaks the current config format. Forcing it is worse than the finding.
+2. orders.user_id index — still deferred, and confirmed correct to defer. The
+   column is nullable with no users table and no query filtering on it; an
+   index over an all-NULL column is pure overhead.
+3. Catalog duplication — FIXED. The availability expression is now a single
+   shared `availableExpr` used by all three reads, and the dead `?? 0`
+   coalesce is gone from all three call sites.
+   Task 5's review had verified the no-inventory-row case against a live DB
+   but left NO test, so the claim the coalesce depends on was unpinned. Added
+   src/lib/catalog/catalog.test.ts (10 tests) covering it directly, plus the
+   arithmetic, the zero floor, the numeric type, agreement across all three
+   reads, and the deliberate active-filtering asymmetry (by-id resolves an
+   inactive product; by-slug does not).
+4. Wordmark aria-label — FIXED, removed. It duplicated the element's own text
+   and was overridden by SiteHeader's link label anyway.
+5. --line-bright on --panel at 3.13:1 — no action, correctly a watch item. It
+   passes the 3:1 floor for non-text contrast; the note stands as a warning
+   against lightening --panel.
+
+164 tests, tsc clean, lint clean, 10 routes, e2e 3/3 across three runs.
+40 files now byte-identical to the plan, up from 35 at the start of the day.
+
+## Plan drift resolved, and guarded (2026-09-20)
+
+Owner decision: living document plus an automated guard.
+
+Before: 35 of 67 plan code blocks matched the shipped source.
+After:  66 of 67. The remaining one is a declared partial.
+
+Sequence:
+1. Removed an exception instead of encoding it. cookies.ts was created in
+   Task 13 but CART_COOKIE first appears in Task 7, so Task 7's cart/index.ts
+   could never match the shipped file without importing a module that did not
+   exist yet. Moved the module's creation to Task 7 (new Step 0) and dropped
+   Task 13's retrofit step. Task 7 now matches exactly.
+2. Synced 26 files across 52 blocks (plan + briefs) from the shipped source.
+3. Rebuilt the two actions.ts blocks by hand. That file is genuinely created
+   in Task 12 and appended to in Task 13, so its Create block MUST be an
+   intermediate state. Both halves are now derived from the shipped file, and
+   the Create block carries a `<!-- plan-drift: partial — reason -->` marker.
+
+The guard is src/test/plan-drift.test.ts, so it runs in `npm test` and CI:
+  - Create blocks without a marker: byte-for-byte equality with the file.
+  - Partial and Append blocks: every line of code must still appear in the
+    shipped file, in order. Imports excluded, since later tasks merge them.
+  - Partial blocks must carry a stated reason, and are capped at 3 so the
+    holes in the guarantee cannot multiply quietly.
+
+VERIFIED THE GUARD ACTUALLY BITES, rather than trusting a green run — the
+lesson from the uncontrolled-input assertion earlier today. Three probes:
+  A. source changed, plan untouched  -> 1 failed  (the real-world failure)
+  B. plan changed, source untouched  -> 1 failed
+  C. drift inside the PARTIAL block  -> 1 failed  (weaker rule still bites)
+  D. baseline restored               -> 72 passed
+
+Suite is now 236 tests, of which 72 are this guard's parameterised cases.

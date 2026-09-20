@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { getOrCreateCartId, getCartLines, setQuantity } from "@/lib/cart";
 import { getCatalogProductById } from "@/lib/catalog";
 import { createPendingOrder } from "@/lib/orders";
+import { grantOrderAccess } from "@/lib/orders/access";
 import { OutOfStockError } from "@/lib/inventory";
 import { PENDING_ORDER_COOKIE } from "@/lib/cookies";
 import { getActiveDiscount } from "../actions";
@@ -99,6 +100,11 @@ export async function startCheckoutAction(
       path: "/",
       maxAge: 60 * 30,
     });
+
+    // Whoever created this order may view it. Granted here rather than after
+    // payment because the confirmation page is also where an unpaid order
+    // reports its status, and the webhook has no access to this cookie jar.
+    await grantOrderAccess(order.id);
 
     return {
       status: "ready",

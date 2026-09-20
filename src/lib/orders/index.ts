@@ -1,4 +1,4 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   orders,
@@ -275,6 +275,42 @@ export async function markOrderPaid(
 
     return order;
   });
+}
+
+/**
+ * Looks up an order the caller has already proved access to, by matching the
+ * order number against a set of order ids granted to this browser.
+ *
+ * The id filter is part of the WHERE clause rather than a check on the result,
+ * so there is no code path here that reads an order without a credential.
+ * An empty grant list short-circuits: `inArray(x, [])` is an SQL no-op in some
+ * dialects, and "no credentials" must never mean "no filter".
+ */
+export async function findOrderByNumberForIds(
+  orderNumber: number,
+  allowedOrderIds: string[],
+): Promise<OrderWithItems | null> {
+  if (allowedOrderIds.length === 0) return null;
+
+  const [order] = await db
+    .select()
+    .from(orders)
+    .where(
+      and(
+        eq(orders.orderNumber, orderNumber),
+        inArray(orders.id, allowedOrderIds),
+      ),
+    )
+    .limit(1);
+
+  if (!order) return null;
+
+  const items = await db
+    .select()
+    .from(orderItems)
+    .where(eq(orderItems.orderId, order.id));
+
+  return { ...order, items };
 }
 
 export async function findOrderByNumber(

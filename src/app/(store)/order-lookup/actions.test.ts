@@ -9,6 +9,22 @@ vi.mock("next/navigation", () => ({
   },
 }));
 
+const jar = new Map<string, string>();
+vi.mock("next/headers", () => ({
+  cookies: async () => ({
+    get: (name: string) => {
+      const value = jar.get(name);
+      return value === undefined ? undefined : { value };
+    },
+    set: (name: string, value: string) => {
+      jar.set(name, value);
+    },
+    delete: (name: string) => {
+      jar.delete(name);
+    },
+  }),
+}));
+
 let ctx: Awaited<ReturnType<typeof testDb>>;
 vi.mock("@/lib/db/client", async () => {
   const { testDb } = await import("@/test/db");
@@ -19,6 +35,7 @@ vi.mock("@/lib/db/client", async () => {
 const { lookupOrderAction } = await import("./actions");
 
 let orderNumber: number;
+let orderId: string;
 const EMAIL = "buyer@example.com";
 
 function form(orderNumberInput: string, email: string): FormData {
@@ -54,6 +71,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  jar.clear();
 
   const [bottle] = await ctx.db
     .insert(products)
@@ -87,6 +105,7 @@ beforeEach(async () => {
     })
     .returning();
   orderNumber = order.orderNumber;
+  orderId = order.id;
 
   await ctx.db.insert(orderItems).values({
     orderId: order.id,
@@ -99,22 +118,35 @@ beforeEach(async () => {
 });
 
 describe("lookupOrderAction", () => {
-  it("redirects to the order when both fields match", async () => {
+  it("redirects to the order without putting the email in the URL", async () => {
     const result = await lookup(`CS-${orderNumber}`, EMAIL);
 
-    expect(result.redirectedTo).toBe(
-      `/order/${orderNumber}?email=${encodeURIComponent(EMAIL)}`,
-    );
+    expect(result.redirectedTo).toBe(`/order/${orderNumber}`);
+    // The whole point of the change: no email, anywhere in the URL.
+    expect(result.redirectedTo).not.toContain("email");
+    expect(result.redirectedTo).not.toContain("@");
+  });
+
+  it("grants this browser access to the order it found", async () => {
+    await lookup(`CS-${orderNumber}`, EMAIL);
+
+    expect(jar.get("cs_order_access")).toBe(orderId);
+  });
+
+  it("grants nothing when the email does not match", async () => {
+    await lookup(`CS-${orderNumber}`, "someone@else.com");
+
+    expect(jar.has("cs_order_access")).toBe(false);
   });
 
   it("accepts the bare number without the CS- prefix", async () => {
     const result = await lookup(String(orderNumber), EMAIL);
-    expect(result.redirectedTo).not.toBeNull();
+    expect(result.redirectedTo).toBe(`/order/${orderNumber}`);
   });
 
   it("matches the email case-insensitively", async () => {
     const result = await lookup(`CS-${orderNumber}`, "BUYER@Example.com");
-    expect(result.redirectedTo).not.toBeNull();
+    expect(result.redirectedTo).toBe(`/order/${orderNumber}`);
   });
 
   it("refuses a real order number with the wrong email", async () => {

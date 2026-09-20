@@ -1,7 +1,8 @@
 export function Wordmark({ size = 22 }: { size?: number }) {
   return (
+    // No aria-label: it would duplicate the element's own text, and in
+    // SiteHeader the wrapping link's label overrides it anyway.
     <span
-      aria-label="Coldsmoke"
       style={{
         fontSize: size,
         fontWeight: 300,

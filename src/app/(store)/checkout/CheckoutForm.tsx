@@ -149,7 +149,10 @@ function PaymentStep({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const confirmationUrl = `/order/${orderNumber}?email=${encodeURIComponent(email)}`;
+  // No email in the URL: access is carried by the httpOnly cookie the
+  // checkout action set, so the confirmation page keeps the customer's
+  // address out of browser history, access logs and referrer headers.
+  const confirmationUrl = `/order/${orderNumber}`;
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -183,7 +186,10 @@ function PaymentStep({
 
   return (
     <form onSubmit={handleSubmit} className={styles.paymentForm}>
-      <p className={styles.total}>Total {formatCents(totalCents)}</p>
+      <div className={styles.summary}>
+        <p className={styles.total}>Total {formatCents(totalCents)}</p>
+        <p className={styles.receiptNote}>A receipt will go to {email}.</p>
+      </div>
 
       <PaymentElement />
 

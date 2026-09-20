@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { findOrderByNumber, parseOrderNumber } from "@/lib/orders";
+import { grantOrderAccess } from "@/lib/orders/access";
 
 export type LookupState = { error?: string };
 
@@ -23,5 +24,9 @@ export async function lookupOrderAction(
     return { error: "We couldn't find that order. Check both fields." };
   }
 
-  redirect(`/order/${order.orderNumber}?email=${encodeURIComponent(email)}`);
+  // The email proved ownership here; from now on the cookie carries it, so
+  // the address never has to travel in a URL.
+  await grantOrderAccess(order.id);
+
+  redirect(`/order/${order.orderNumber}`);
 }

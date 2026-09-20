@@ -55,8 +55,16 @@ test("the cart survives a reload and totals recalculate", async ({ page }) => {
   await page.getByLabel(/^Quantity of /).fill("2");
   await page.getByRole("button", { name: "Update" }).click();
 
+  // Wait for the SERVER-rendered total before reloading, or the reload races
+  // the re-render and reads the pre-update cart.
+  //
+  // Not the input's value: it is uncontrolled, so it still holds the "2" that
+  // was just typed whether or not the action landed. Asserting it passes
+  // either way, which is worse than not asserting at all.
+  await expect(page.getByText("$90.00").first()).toBeVisible();
+
   await page.reload();
-  // Two bottles is $90, which clears the free-shipping threshold.
+  // Still $90 after a round trip, and two bottles clears free shipping.
   await expect(page.getByText("$90.00").first()).toBeVisible();
   await expect(page.getByText("Free")).toBeVisible();
 });
