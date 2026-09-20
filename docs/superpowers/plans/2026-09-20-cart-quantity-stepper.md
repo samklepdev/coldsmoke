@@ -17,7 +17,7 @@ Spec: `docs/superpowers/specs/2026-09-20-cart-quantity-stepper-design.md`
 - `MAX_LINE_QUANTITY` (99) is imported from **`@/lib/cart/limits`**, never from `@/lib/cart`, and never hardcoded. `@/lib/cart` pulls in `next/headers` and the Postgres client; importing it from a Client Component drags `fs`/`net`/`tls` and the DB driver into the browser bundle and the build fails with *"Module not found: Can't resolve 'fs'"*. Task 1 creates that module. This was verified by building it and watching it break, not assumed.
 - Control borders use `--line-bright`, not `--line`. `--line` is 1.70:1 on `--panel` and fails WCAG 1.4.11; `--line-bright` is 3.13:1 and passes.
 - `setQuantityAction(formData: FormData): Promise<void>` in `src/app/(store)/actions.ts` is **not** modified by this plan.
-- `src/test/plan-drift.test.ts` asserts every `Create \`path\`` block in `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md` matches the file byte for byte. Touching `cart/page.tsx` or adding a tracked file fails `npm test` until that plan and `.superpowers/sdd/task-13-brief.md` are synced. Task 5 does this.
+- `src/test/plan-drift.test.ts` asserts every `Create \`path\`` block in `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md` matches the file byte for byte. **Every task that changes a tracked source file syncs that plan in the same commit**, so the suite is never left red between tasks — a known failure masks the next implementer's own breakage. Tracked files this plan touches: `src/lib/cart/index.ts` (Task 1), `src/app/(store)/cart/page.module.css` (Task 2), `src/app/(store)/cart/page.tsx` (Task 3), `e2e/checkout.spec.ts` (Task 4). New files become tracked once the plan gains a `Create` block for them.
 - Run the dev server and `stripe listen` separately; never run `npm run build` while `next dev` is running — they share `.next`.
 
 ## File Structure
@@ -30,8 +30,12 @@ Spec: `docs/superpowers/specs/2026-09-20-cart-quantity-stepper-design.md`
 | `src/app/(store)/cart/page.module.css` (modify) | Styles for the stepper; drop the now-unused `.qty` input rule. |
 | `src/app/(store)/cart/page.tsx` (modify) | Swap the input + Update button for `<QuantityStepper />`. Nothing else changes. |
 | `e2e/checkout.spec.ts` (modify) | Replace the free-text-box test with stepper coverage. |
-| `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md` (modify) | Sync so the drift guard passes. |
-| `.superpowers/sdd/task-13-brief.md` (modify) | Same sync. |
+| `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md` (modify) | Synced by whichever task changed a tracked file, in that task's own commit. |
+
+Task briefs under `.superpowers/sdd/` are **generated** from the plan documents
+by the `task-brief` script and are gitignored (`*`). Never hand-edit them and
+never `git add -f` one — regenerate instead. Only the plan document is tracked,
+and it is the only thing `plan-drift.test.ts` reads.
 
 ---
 
@@ -79,15 +83,50 @@ export { MAX_LINE_QUANTITY } from "./limits";
 
 Leave every other export alone. Existing importers (`src/app/(store)/actions.ts`, `src/app/(store)/product/[slug]/page.tsx`) keep working unchanged.
 
-- [ ] **Step 3: Verify nothing broke**
+- [ ] **Step 3: Observe the drift guard fail, and understand why**
 
 Run: `npx tsc --noEmit && npm test`
-Expected: no type errors; `Test Files 17 passed`, `Tests 236 passed`.
+Expected: no type errors, but **one failing test** —
+`src/lib/cart/index.ts matches the plan byte for byte`.
 
-- [ ] **Step 4: Commit**
+This is the guard working. `src/lib/cart/index.ts` has a `Create` block in
+`docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md`, and
+Step 2 changed the file. Do not weaken or skip the test; Step 4 fixes it
+properly.
+
+- [ ] **Step 4: Sync Plan 1**
+
+In `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md`:
+
+1. Find the fenced block introduced by ``Create `src/lib/cart/index.ts`:`` and
+   replace its entire contents with the current contents of that file.
+2. Directly **before** that block, add the new module so it is covered too:
+
+````markdown
+Create `src/lib/cart/limits.ts`:
+
+```ts
+<paste the full contents of src/lib/cart/limits.ts>
+```
+````
+
+3. Update Task 7's **Files:** line so it reads:
+
+```markdown
+- Create: `src/lib/cookies.ts`, `src/lib/cart/limits.ts`, `src/lib/cart/index.ts`, `src/lib/cart/cart.test.ts`
+```
+
+- [ ] **Step 5: Verify green**
+
+Run: `npm test`
+Expected: `Test Files 17 passed`, `Tests 237 passed` — one more than before,
+because `limits.ts` is now a tracked file with its own check.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/lib/cart/limits.ts src/lib/cart/index.ts
+git add src/lib/cart/limits.ts src/lib/cart/index.ts \
+  docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md
 git commit -m "refactor: move MAX_LINE_QUANTITY somewhere a client component can import"
 ```
 
@@ -269,10 +308,41 @@ export function QuantityStepper({
 Run: `npx tsc --noEmit`
 Expected: no output (the component is not yet imported, which is fine — it must still typecheck).
 
-- [ ] **Step 4: Commit**
+
+- [ ] **Step 4: Sync Plan 1 so the drift guard stays green**
+
+`src/app/(store)/cart/page.module.css` is tracked by `src/test/plan-drift.test.ts`, so `npm test` now
+fails on `src/app/(store)/cart/page.module.css matches the plan byte for byte`. That is the guard working.
+Fix it by updating the plan — never by weakening or skipping the test.
+
+In `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md`:
+
+1. Replace the contents of the fenced block introduced by
+   ``Create `src/app/(store)/cart/page.module.css`:`` with the current contents
+   of that file.
+2. Directly after that block, add the new component so it becomes tracked too:
+
+````markdown
+Create `src/app/(store)/cart/QuantityStepper.tsx`:
+
+```tsx
+<paste the full contents of src/app/(store)/cart/QuantityStepper.tsx>
+```
+````
+
+3. Update Task 13's **Files:** line so it reads:
+
+```markdown
+- Create: `src/app/(store)/cart/page.tsx` + `.module.css`, `src/app/(store)/cart/DiscountForm.tsx`, `src/app/(store)/cart/QuantityStepper.tsx`
+```
+
+Then run `npm test` and confirm it is fully green before committing.
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/app/\(store\)/cart/QuantityStepper.tsx src/app/\(store\)/cart/page.module.css
+git add src/app/\(store\)/cart/QuantityStepper.tsx src/app/\(store\)/cart/page.module.css \
+  docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md
 git commit -m "feat: add the cart quantity stepper component"
 ```
 
@@ -327,10 +397,26 @@ Start the dev server (`npm run dev`), add a bottle, and open `http://localhost:3
 
 Expected: a `− 1 +` control with `−` greyed out, a `Remove` link, and no `Update` button. Clicking `+` changes the count immediately and the subtotal follows a moment later. Two bottles ($90.00) flips Shipping to "Free".
 
-- [ ] **Step 5: Commit**
+
+- [ ] **Step 5: Sync Plan 1 so the drift guard stays green**
+
+`src/app/(store)/cart/page.tsx` is tracked by `src/test/plan-drift.test.ts`, so `npm test` now
+fails on `src/app/(store)/cart/page.tsx matches the plan byte for byte`. That is the guard working.
+Fix it by updating the plan — never by weakening or skipping the test.
+
+In `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md`:
+
+1. Replace the contents of the fenced block introduced by
+   ``Create `src/app/(store)/cart/page.tsx`:`` with the current contents of that
+   file.
+
+Then run `npm test` and confirm it is fully green before committing.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/app/\(store\)/cart/page.tsx
+git add src/app/\(store\)/cart/page.tsx \
+  docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md
 git commit -m "feat: auto-update the cart from a quantity stepper"
 ```
 
@@ -401,75 +487,81 @@ Expected: 3 passed.
 Run: `npx playwright test`
 Expected: 6 passed, 1 skipped — or 7 passed if `stripe listen` is running and `STRIPE_SECRET_KEY` is real. The payment test skips itself without real keys.
 
-- [ ] **Step 4: Commit**
+
+- [ ] **Step 4: Sync Plan 1 so the drift guard stays green**
+
+`e2e/checkout.spec.ts` is tracked by `src/test/plan-drift.test.ts`, so `npm test` now
+fails on `e2e/checkout.spec.ts matches the plan byte for byte`. That is the guard working.
+Fix it by updating the plan — never by weakening or skipping the test.
+
+In `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md`:
+
+1. Replace the contents of the fenced block introduced by
+   ``Create `e2e/checkout.spec.ts`:`` with the current contents of that file.
+   Note this block lives in **Task 17** of Plan 1, not Task 13.
+
+Then run `npm test` and confirm it is fully green before committing.
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add e2e/checkout.spec.ts
+git add e2e/checkout.spec.ts \
+  docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md
 git commit -m "test: cover the cart stepper and drop the obsolete input test"
 ```
 
 ---
 
-### Task 5: Sync the plan so the drift guard passes
+### Task 5: Full verification
 
-**Files:**
-- Modify: `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md`
-- Modify: `.superpowers/sdd/task-13-brief.md`
+**Files:** none — this is a verification task.
 
 **Interfaces:**
-- Consumes: nothing.
+- Consumes: everything built above.
 - Produces: nothing.
 
-**Context the implementer needs:** `src/test/plan-drift.test.ts` asserts that every ``Create `path`:`` block in the Plan 1 document matches the file on disk byte for byte. Task 3 changed `cart/page.tsx`, so that test is now failing. This is the guard working, not a bug — the fix is to update the plan, never to weaken the test.
+**Context the implementer needs:** Tasks 1-4 each synced Plan 1 for the file
+they touched, so no drift work remains. This task confirms the whole branch is
+sound before the manual no-JS check.
 
-- [ ] **Step 1: Confirm the guard is failing, and why**
-
-Run: `npx vitest run src/test/plan-drift.test.ts`
-Expected: FAIL on `src/app/(store)/cart/page.tsx matches the plan byte for byte`.
-
-- [ ] **Step 2: Sync both documents**
-
-For each of the two files, find the fenced block introduced by ``Create `src/app/(store)/cart/page.tsx`:`` and replace its entire contents with the current contents of that source file. Then add the new component to Plan 1's Task 13 and to the brief, directly after the cart page block:
-
-````markdown
-Create `src/app/(store)/cart/QuantityStepper.tsx`:
-
-```tsx
-<paste the full contents of src/app/(store)/cart/QuantityStepper.tsx>
-```
-````
-
-Also update Task 13's **Files:** line in both documents so it reads:
-
-```markdown
-- Create: `src/app/(store)/cart/page.tsx` + `.module.css`, `src/app/(store)/cart/DiscountForm.tsx`, `src/app/(store)/cart/QuantityStepper.tsx`
-```
-
-And replace the `page.module.css` block in both documents with the current file contents, since Task 2 changed it.
-
-- [ ] **Step 3: Verify the guard passes**
+- [ ] **Step 1: Confirm no drift remains**
 
 Run: `npx vitest run src/test/plan-drift.test.ts`
-Expected: PASS. The count of checked files rises by one (`QuantityStepper.tsx` is now tracked).
+Expected: all green, and the check count is 74 or higher — `limits.ts` and
+`QuantityStepper.tsx` both became newly tracked during this plan. If any file
+reports a mismatch, a task's sync step was skipped; fix the plan document, not
+the test.
 
-- [ ] **Step 4: Full verification**
+- [ ] **Step 2: Full suite**
 
-Run each of these and confirm the expected result:
+Run: `npm test`
+Expected: `Test Files 17 passed`. No failures.
+
+If you see foreign-key violations mentioning rows that were just inserted, you
+are racing another process against the shared test database — wait and re-run
+rather than treating it as a regression.
+
+- [ ] **Step 3: Types, lint, build**
 
 ```bash
-npm test          # Test Files 17 passed, Tests 237+ passed
-npx tsc --noEmit  # no output
-npm run lint      # no output
+npx tsc --noEmit
+npm run lint
 ```
 
-Then stop the dev server and run `npm run build` — expected: 10 routes, no errors. (`next build` and `next dev` share `.next`; running both at once corrupts it.)
+Both expected to produce no output. Then stop any dev server and run
+`npm run build` — expected: 10 routes, no errors. `next build` and `next dev`
+share `.next`, so they must not run at the same time.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: End-to-end**
 
-```bash
-git add docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md .superpowers/sdd/task-13-brief.md
-git commit -m "docs: sync Plan 1 with the cart stepper"
-```
+Run: `npx playwright test`
+Expected: all tests pass. The payment test skips itself unless
+`STRIPE_SECRET_KEY` is real and `stripe listen` is forwarding.
+
+- [ ] **Step 5: Report**
+
+No commit is needed if everything is green and the working tree is clean.
+Report the exact numbers you saw for each command.
 
 ---
 
