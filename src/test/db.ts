@@ -21,7 +21,8 @@ export async function testDb() {
     async truncate() {
       await client`
         TRUNCATE order_items, orders, cart_items, carts, inventory_adjustments,
-                 inventory, product_images, products, discount_codes, stripe_events
+                 inventory, product_images, products, discount_codes, stripe_events,
+                 contact_messages
         RESTART IDENTITY CASCADE`;
     },
     async close() {
