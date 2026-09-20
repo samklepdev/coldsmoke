@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
-import { products, carts, cartItems } from "@/lib/db/schema";
+import { products, carts, cartItems, discountCodes } from "@/lib/db/schema";
 
 /**
  * The quantity arriving from a form is an arbitrary string. addItem and
@@ -10,13 +10,28 @@ import { products, carts, cartItems } from "@/lib/db/schema";
  * coerce first. These tests pin that coercion.
  */
 
+/**
+ * A stand-in cookie jar. The discount action's whole contract is expressed in
+ * cookie writes, so asserting against a real store is the point — a no-op mock
+ * would let a missing `set` or `delete` pass.
+ */
+const jar = new Map<string, string>();
 let cookieCartId: string | undefined;
 vi.mock("next/headers", () => ({
   cookies: async () => ({
-    get: (name: string) =>
-      name === "cs_cart" && cookieCartId ? { value: cookieCartId } : undefined,
-    set: () => {},
-    delete: () => {},
+    get: (name: string) => {
+      if (name === "cs_cart") {
+        return cookieCartId ? { value: cookieCartId } : undefined;
+      }
+      const value = jar.get(name);
+      return value === undefined ? undefined : { value };
+    },
+    set: (name: string, value: string) => {
+      jar.set(name, value);
+    },
+    delete: (name: string) => {
+      jar.delete(name);
+    },
   }),
 }));
 
@@ -38,7 +53,12 @@ vi.mock("@/lib/db/client", async () => {
   return { db: shared.db };
 });
 
-const { addToCartAction, setQuantityAction } = await import("./actions");
+const {
+  addToCartAction,
+  setQuantityAction,
+  applyDiscountAction,
+  getActiveDiscount,
+} = await import("./actions");
 
 let bottleId: string;
 
@@ -75,6 +95,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  jar.clear();
 
   const [bottle] = await ctx.db
     .insert(products)
@@ -155,5 +176,113 @@ describe("setQuantityAction", () => {
   it("leaves the line untouched above the per-line cap", async () => {
     await setQuantityAction(form({ productId: bottleId, quantity: "500" }));
     expect(await storedQuantity()).toBe(2);
+  });
+});
+
+describe("applyDiscountAction", () => {
+  beforeEach(async () => {
+    // One bottle: a $45.00 subtotal.
+    await addToCart(form({ productId: bottleId, quantity: "1" }));
+
+    await ctx.db.insert(discountCodes).values([
+      { code: "smoke10", type: "percent", value: 10 },
+      // Needs a $60.00 order; the seeded cart is below it.
+      { code: "bigspend", type: "fixed", value: 500, minSubtotalCents: 6000 },
+      { code: "retired", type: "percent", value: 10, active: false },
+    ]);
+  });
+
+  it("stores a valid code in the discount cookie", async () => {
+    const state = await applyDiscountAction({}, form({ code: "smoke10" }));
+
+    expect(state).toEqual({ applied: "smoke10" });
+    expect(jar.get("cs_discount")).toBe("smoke10");
+  });
+
+  it("accepts a code in any case, storing the canonical lowercase form", async () => {
+    const state = await applyDiscountAction({}, form({ code: "  SmOkE10 " }));
+
+    expect(state).toEqual({ applied: "smoke10" });
+    expect(jar.get("cs_discount")).toBe("smoke10");
+  });
+
+  it("reports an unknown code without storing it", async () => {
+    const state = await applyDiscountAction({}, form({ code: "nosuchcode" }));
+
+    expect(state.error).toBe("That code isn't valid.");
+    expect(jar.has("cs_discount")).toBe(false);
+  });
+
+  it("explains the minimum when the cart is below it", async () => {
+    const state = await applyDiscountAction({}, form({ code: "bigspend" }));
+
+    expect(state.error).toBe("That code needs an order of $60.00 or more.");
+    expect(jar.has("cs_discount")).toBe(false);
+  });
+
+  it("rejects an inactive code", async () => {
+    const state = await applyDiscountAction({}, form({ code: "retired" }));
+
+    expect(state.error).toBe("That code is no longer active.");
+    expect(jar.has("cs_discount")).toBe(false);
+  });
+
+  it("clears the applied code when a rejected one is submitted after it", async () => {
+    // The trap: the cookie is dropped, so the page must not keep showing the
+    // old discount in its totals.
+    await applyDiscountAction({}, form({ code: "smoke10" }));
+    expect(jar.get("cs_discount")).toBe("smoke10");
+
+    const state = await applyDiscountAction({}, form({ code: "nosuchcode" }));
+
+    expect(state.error).toBe("That code isn't valid.");
+    expect(jar.has("cs_discount")).toBe(false);
+    expect(await getActiveDiscount()).toBeNull();
+  });
+
+  it("clears the applied code on an empty submission", async () => {
+    await applyDiscountAction({}, form({ code: "smoke10" }));
+
+    const state = await applyDiscountAction({}, form({ code: "   " }));
+
+    expect(state).toEqual({});
+    expect(jar.has("cs_discount")).toBe(false);
+  });
+});
+
+describe("getActiveDiscount", () => {
+  beforeEach(async () => {
+    await addToCart(form({ productId: bottleId, quantity: "2" }));
+    await ctx.db
+      .insert(discountCodes)
+      .values({ code: "bigspend", type: "fixed", value: 500, minSubtotalCents: 6000 });
+  });
+
+  it("returns nothing when no code is applied", async () => {
+    expect(await getActiveDiscount()).toBeNull();
+  });
+
+  it("returns the applied discount while the cart still qualifies", async () => {
+    // Two bottles: $90.00, over the $60.00 minimum.
+    await applyDiscountAction({}, form({ code: "bigspend" }));
+
+    expect(await getActiveDiscount()).toMatchObject({
+      code: "bigspend",
+      type: "fixed",
+      value: 500,
+    });
+  });
+
+  it("stops applying once the cart drops below the code's minimum", async () => {
+    await applyDiscountAction({}, form({ code: "bigspend" }));
+    expect(await getActiveDiscount()).not.toBeNull();
+
+    // Down to one bottle: $45.00, under the minimum. The cookie is untouched,
+    // so re-validation on read is the only thing preventing a discount the
+    // order no longer qualifies for.
+    await setQuantityAction(form({ productId: bottleId, quantity: "1" }));
+
+    expect(jar.get("cs_discount")).toBe("bigspend");
+    expect(await getActiveDiscount()).toBeNull();
   });
 });

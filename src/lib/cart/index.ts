@@ -4,8 +4,10 @@ import { db } from "@/lib/db/client";
 import { carts, cartItems } from "@/lib/db/schema";
 import { getProductsByIds } from "@/lib/catalog";
 import type { QuoteLine } from "@/lib/pricing/quote";
+import { CART_COOKIE } from "@/lib/cookies";
 
-export const CART_COOKIE = "cs_cart";
+export { CART_COOKIE };
+
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 /**

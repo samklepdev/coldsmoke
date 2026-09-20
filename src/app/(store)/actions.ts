@@ -2,12 +2,22 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import {
+  getCartId,
   getOrCreateCartId,
+  getCartLines,
   addItem,
   setQuantity,
   MAX_LINE_QUANTITY,
 } from "@/lib/cart";
+import { quote } from "@/lib/pricing/quote";
+import { DISCOUNT_COOKIE } from "@/lib/cookies";
+import {
+  lookupDiscount,
+  validateDiscount,
+  discountFailureMessage,
+} from "@/lib/discounts";
 
 /**
  * Form values are strings and can be anything a client chooses to send. An
@@ -59,4 +69,69 @@ export async function setQuantityAction(formData: FormData): Promise<void> {
   await setQuantity(cartId, productId, quantity);
 
   revalidatePath("/cart");
+}
+
+export type DiscountFormState = { error?: string; applied?: string };
+
+export async function applyDiscountAction(
+  _prev: DiscountFormState,
+  formData: FormData,
+): Promise<DiscountFormState> {
+  const raw = String(formData.get("code") ?? "");
+  const jar = await cookies();
+
+  // An empty submission clears whatever code was applied.
+  if (!raw.trim()) {
+    jar.delete(DISCOUNT_COOKIE);
+    revalidatePath("/cart");
+    return {};
+  }
+
+  const cartId = await getOrCreateCartId();
+  const lines = await getCartLines(cartId);
+  const { subtotalCents } = quote(lines);
+
+  const code = await lookupDiscount(raw);
+  const result = validateDiscount(code, subtotalCents);
+
+  if (!result.ok) {
+    // Rejecting a new code also drops any previously applied one, so the page
+    // has to re-render or the totals keep showing a discount that is now gone.
+    jar.delete(DISCOUNT_COOKIE);
+    revalidatePath("/cart");
+    return { error: discountFailureMessage(result.reason, code ?? undefined) };
+  }
+
+  jar.set(DISCOUNT_COOKIE, result.discount.code, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60 * 24,
+  });
+
+  revalidatePath("/cart");
+  return { applied: result.discount.code };
+}
+
+/**
+ * Shared by the cart and checkout pages so both price identically. Read-only
+ * on purpose — it runs during Server Component render, where setting a cookie
+ * would throw.
+ *
+ * Re-validates against the current subtotal on every call, so a code that
+ * needed a $50 order stops applying by itself once the cart drops below it.
+ */
+export async function getActiveDiscount() {
+  const jar = await cookies();
+  const stored = jar.get(DISCOUNT_COOKIE)?.value;
+  if (!stored) return null;
+
+  const cartId = await getCartId();
+  if (!cartId) return null;
+  const lines = await getCartLines(cartId);
+  const { subtotalCents } = quote(lines);
+
+  const code = await lookupDiscount(stored);
+  const result = validateDiscount(code, subtotalCents);
+  return result.ok ? result.discount : null;
 }
