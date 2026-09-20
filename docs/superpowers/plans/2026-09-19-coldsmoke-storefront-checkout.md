@@ -711,8 +711,9 @@ Create `src/lib/db/seed.ts`:
 
 ```ts
 import "dotenv/config";
+import { eq } from "drizzle-orm";
 import { db } from "./client";
-import { products, inventory } from "./schema";
+import { products, inventory, productImages } from "./schema";
 
 const SEED = [
   {
@@ -725,6 +726,10 @@ const SEED = [
     sku: "CS-EDT-50",
     sortOrder: 0,
     onHand: 50,
+    image: {
+      url: "/images/coldsmoke-fallback-bottle.svg",
+      alt: "The Coldsmoke 50 mL bottle, a dark flask with a brushed silver cap, lit from behind against near-black.",
+    },
   },
   {
     slug: "coldsmoke-sample-2ml",
@@ -736,12 +741,16 @@ const SEED = [
     sku: "CS-SMP-2",
     sortOrder: 1,
     onHand: 200,
+    image: {
+      url: "/images/coldsmoke-fallback-brand.svg",
+      alt: "The Coldsmoke brand card: the wordmark over the line “Cold air. Dark spice.”",
+    },
   },
 ];
 
 async function main() {
   for (const item of SEED) {
-    const { onHand, ...product } = item;
+    const { onHand, image, ...product } = item;
     const [row] = await db
       .insert(products)
       .values(product)
@@ -755,6 +764,14 @@ async function main() {
       .insert(inventory)
       .values({ productId: row.id, onHand, reserved: 0 })
       .onConflictDoNothing();
+
+    // Replace rather than append. The seed is re-run routinely and
+    // product_images has no unique constraint to conflict on, so inserting
+    // would stack a duplicate row on every run.
+    await db.delete(productImages).where(eq(productImages.productId, row.id));
+    await db
+      .insert(productImages)
+      .values({ productId: row.id, url: image.url, alt: image.alt });
 
     console.log(`Seeded ${row.slug}`);
   }
@@ -4344,6 +4361,22 @@ Create `src/app/(store)/shop/page.module.css`:
   transition: border-color 160ms ease;
 }
 
+/* No border of its own: the card already has one, and nesting a second inside
+   it reads as a box in a box. The gradient alone separates art from panel. */
+.thumb {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  margin-bottom: var(--space-4);
+  overflow: hidden;
+  background: linear-gradient(180deg, #17171b, #0a0a0c);
+  display: grid;
+  place-items: center;
+}
+
+.thumbImage {
+  object-fit: contain;
+}
+
 .card:hover {
   border-color: var(--line-bright);
 }
@@ -4380,9 +4413,11 @@ Create `src/app/(store)/shop/page.module.css`:
 Create `src/app/(store)/shop/page.tsx`:
 
 ```tsx
+import Image from "next/image";
 import Link from "next/link";
 import type { Metadata } from "next";
 import { getActiveProducts } from "@/lib/catalog";
+import { Wordmark } from "@/components/ui/Wordmark";
 import { Price } from "@/components/ui/Price";
 import styles from "./page.module.css";
 
@@ -4402,6 +4437,23 @@ export default async function ShopPage() {
             href={`/product/${product.slug}`}
             className={styles.card}
           >
+            <div className={styles.thumb}>
+              {product.images[0] ? (
+                <Image
+                  src={product.images[0].url}
+                  // Empty: the card's own name and tagline already say what
+                  // this is, and the link reads them out. A description here
+                  // would just repeat them.
+                  alt=""
+                  fill
+                  className={styles.thumbImage}
+                  sizes="(max-width: 640px) 100vw, 320px"
+                />
+              ) : (
+                <Wordmark size={18} />
+              )}
+            </div>
+
             <div className={styles.name}>{product.name}</div>
             {product.tagline && (
               <div className={styles.tagline}>{product.tagline}</div>
@@ -4434,12 +4486,22 @@ Create `src/app/(store)/product/[slug]/page.module.css`:
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
 }
 
+/* Square, because the product imagery is square. A 3/4 box either crops the
+   art or letterboxes it, and the brand card cannot survive a crop. */
 .visual {
-  aspect-ratio: 3 / 4;
+  position: relative;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
   background: linear-gradient(180deg, #17171b, #0a0a0c);
   border: 1px solid var(--line);
   display: grid;
   place-items: center;
+}
+
+.image {
+  /* contain, not cover: the brand card carries an inset border frame and type
+     that runs nearly the full width, and cover shaves both off the edges. */
+  object-fit: contain;
 }
 
 .name {
@@ -4502,6 +4564,7 @@ Create `src/app/(store)/product/[slug]/page.module.css`:
 Create `src/app/(store)/product/[slug]/page.tsx`:
 
 ```tsx
+import Image from "next/image";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { getProductBySlug } from "@/lib/catalog";
@@ -4528,11 +4591,25 @@ export default async function ProductPage({
   if (!product) notFound();
 
   const soldOut = product.available <= 0;
+  const image = product.images[0];
 
   return (
     <div className={styles.page}>
       <div className={styles.visual}>
-        <Wordmark size={24} />
+        {image ? (
+          <Image
+            src={image.url}
+            alt={image.alt}
+            // fill, not width/height: the URL comes from the database, so the
+            // intrinsic size is not known at build time.
+            fill
+            className={styles.image}
+            sizes="(max-width: 640px) 100vw, 45vw"
+            priority
+          />
+        ) : (
+          <Wordmark size={24} />
+        )}
       </div>
 
       <div>

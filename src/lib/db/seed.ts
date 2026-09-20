@@ -1,6 +1,7 @@
 import "dotenv/config";
+import { eq } from "drizzle-orm";
 import { db } from "./client";
-import { products, inventory } from "./schema";
+import { products, inventory, productImages } from "./schema";
 
 const SEED = [
   {
@@ -13,6 +14,10 @@ const SEED = [
     sku: "CS-EDT-50",
     sortOrder: 0,
     onHand: 50,
+    image: {
+      url: "/images/coldsmoke-fallback-bottle.svg",
+      alt: "The Coldsmoke 50 mL bottle, a dark flask with a brushed silver cap, lit from behind against near-black.",
+    },
   },
   {
     slug: "coldsmoke-sample-2ml",
@@ -24,12 +29,16 @@ const SEED = [
     sku: "CS-SMP-2",
     sortOrder: 1,
     onHand: 200,
+    image: {
+      url: "/images/coldsmoke-fallback-brand.svg",
+      alt: "The Coldsmoke brand card: the wordmark over the line “Cold air. Dark spice.”",
+    },
   },
 ];
 
 async function main() {
   for (const item of SEED) {
-    const { onHand, ...product } = item;
+    const { onHand, image, ...product } = item;
     const [row] = await db
       .insert(products)
       .values(product)
@@ -43,6 +52,14 @@ async function main() {
       .insert(inventory)
       .values({ productId: row.id, onHand, reserved: 0 })
       .onConflictDoNothing();
+
+    // Replace rather than append. The seed is re-run routinely and
+    // product_images has no unique constraint to conflict on, so inserting
+    // would stack a duplicate row on every run.
+    await db.delete(productImages).where(eq(productImages.productId, row.id));
+    await db
+      .insert(productImages)
+      .values({ productId: row.id, url: image.url, alt: image.alt });
 
     console.log(`Seeded ${row.slug}`);
   }
