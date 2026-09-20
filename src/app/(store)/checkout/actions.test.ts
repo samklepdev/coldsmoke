@@ -36,6 +36,10 @@ vi.mock("next/headers", () => ({
       jar.delete(name);
     },
   }),
+  // The action reads the session to attach a signed-in buyer's userId to the
+  // order. Empty headers mean no session, which is the guest path these tests
+  // exercise -- guest checkout has to keep working.
+  headers: async () => new Headers(),
 }));
 
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));

@@ -28,6 +28,16 @@ export function SignInForm() {
     const safe =
       next && next.startsWith("/") && !next.startsWith("//") ? next : "/account/orders";
     router.push(safe);
+    /**
+     * refresh() as well as push(), or the header keeps saying "Sign in".
+     *
+     * The store layout reads the session and renders the account link, but a
+     * client-side navigation reuses a shared layout instead of re-rendering
+     * it, so the copy stays as it was when the page was first loaded. Without
+     * this the customer signs in successfully and the chrome still tells them
+     * they are signed out until they hard-reload. Measured on 2026-09-20.
+     */
+    router.refresh();
   }, [state.status, params, router]);
 
   return (

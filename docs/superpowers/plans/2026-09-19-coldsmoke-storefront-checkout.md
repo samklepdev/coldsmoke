@@ -3117,6 +3117,9 @@ export async function createPendingOrder(args: {
   cartLines: QuoteLine[];
   cartId?: string | null;
   email: string;
+  /** Set when the buyer is signed in. Guest orders stay null and are claimed
+   *  later by @/lib/orders/claim when the address is verified. */
+  userId?: string | null;
   shippingAddress: Address;
   billingAddress?: Address | null;
   discount?: AppliedDiscount | null;
@@ -3142,6 +3145,7 @@ export async function createPendingOrder(args: {
 
   const money = {
     email,
+    userId: args.userId ?? null,
     cartId: args.cartId ?? null,
     discountCodeId: discount?.id ?? null,
     subtotalCents: final.subtotalCents,
@@ -5405,6 +5409,7 @@ import { grantOrderAccess } from "@/lib/orders/access";
 import { OutOfStockError } from "@/lib/inventory";
 import { PENDING_ORDER_COOKIE } from "@/lib/cookies";
 import { getActiveDiscount } from "../actions";
+import { getSessionUser } from "@/lib/auth/session";
 import type { Address } from "@/lib/db/schema";
 
 const addressSchema = z.object({
@@ -5472,6 +5477,10 @@ export async function startCheckoutAction(
 
   const discount = await getActiveDiscount();
 
+  // A signed-in buyer's order belongs to their account immediately. A guest's
+  // stays unattached until they verify the address.
+  const sessionUser = await getSessionUser();
+
   // Reuse any pending order from an earlier submit on this checkout, so
   // editing an address updates one reservation instead of stacking another.
   // A stale or already-paid id is safe: createPendingOrder verifies the order
@@ -5484,6 +5493,7 @@ export async function startCheckoutAction(
       cartLines: lines,
       cartId,
       email,
+      userId: sessionUser?.id ?? null,
       shippingAddress,
       discount,
       existingOrderId,

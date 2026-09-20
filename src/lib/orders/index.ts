@@ -92,6 +92,9 @@ export async function createPendingOrder(args: {
   cartLines: QuoteLine[];
   cartId?: string | null;
   email: string;
+  /** Set when the buyer is signed in. Guest orders stay null and are claimed
+   *  later by @/lib/orders/claim when the address is verified. */
+  userId?: string | null;
   shippingAddress: Address;
   billingAddress?: Address | null;
   discount?: AppliedDiscount | null;
@@ -117,6 +120,7 @@ export async function createPendingOrder(args: {
 
   const money = {
     email,
+    userId: args.userId ?? null,
     cartId: args.cartId ?? null,
     discountCodeId: discount?.id ?? null,
     subtotalCents: final.subtotalCents,
