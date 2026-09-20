@@ -234,12 +234,12 @@ Create `src/styles/tokens.css`:
   --panel: #17171b;
   --panel-raised: #1f1f24;
   --line: #3e3f45;
-  --line-bright: #4a4b51;
+  --line-bright: #65666e; /* AA 3:1 non-text for control borders */
 
   --text: #b7bbc1;
   --text-dim: #8d9198;
   --text-bright: #d2d5da;
-  --text-faint: #63666d;
+  --text-faint: #82858d; /* AA 4.5:1 on ground and panel */
 
   --silver-start: #9aa0a8;
   --silver-mid: #e4e7ec;
@@ -3474,7 +3474,8 @@ Create `src/components/ui/Field.module.css`:
   width: 100%;
   padding: 0.8rem 0.9rem;
   background: var(--panel);
-  border: 1px solid var(--line);
+  /* --line-bright, not --line: this is a control border and must clear 3:1. */
+  border: 1px solid var(--line-bright);
   color: var(--text-bright);
   border-radius: 2px;
 }
@@ -4035,7 +4036,8 @@ Create `src/app/(store)/product/[slug]/page.module.css`:
   width: 5rem;
   padding: 0.85rem 0.9rem;
   background: var(--panel);
-  border: 1px solid var(--line);
+  /* --line-bright, not --line: this is a control border and must clear 3:1. */
+  border: 1px solid var(--line-bright);
   color: var(--text-bright);
 }
 
@@ -4351,7 +4353,8 @@ Create `src/app/(store)/cart/page.module.css`:
   width: 4.5rem;
   padding: 0.5rem;
   background: var(--panel);
-  border: 1px solid var(--line);
+  /* --line-bright, not --line: this is a control border and must clear 3:1. */
+  border: 1px solid var(--line-bright);
   color: var(--text-bright);
 }
 

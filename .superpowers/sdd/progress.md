@@ -154,3 +154,14 @@ QUEUED small fix (batch with the next src/lib change):
   so every read casts `as Address` with nothing validating the shape. Adding
   .$type<Address>() to the schema is type-only (no migration) and removes the
   blind casts. A malformed address currently renders blank rather than erroring.
+Task 11: complete (commit 6a10c81) + controller a11y fix.
+  - Implementer measured contrast as instructed and self-reported a FAILURE
+    rather than asserting compliance: --text-faint 3.44:1 (needs 4.5:1).
+    Controller independently computed the same 3.44 before seeing the report.
+  - Controller found a THIRD failure neither had flagged: the form input border
+    (--line on --panel) at 1.70:1, needs 3:1. That is the checkout form.
+  - Fixes: --text-faint #63666d -> #82858d (5.36 ground / 4.84 panel);
+    --line-bright #4a4b51 -> #65666e (3.47 / 3.13); Field input border switched
+    from --line to --line-bright. --line stays as-is for dividers, which are
+    decorative and exempt from 1.4.11.
+  - Plan patched so Tasks 12/13 quantity inputs use --line-bright too.
