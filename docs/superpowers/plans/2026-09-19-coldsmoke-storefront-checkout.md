@@ -120,6 +120,11 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     setupFiles: ["dotenv/config"],
+    // Integration test files share one Postgres database and each TRUNCATEs
+    // it in beforeEach. Run files one at a time so those truncations cannot
+    // race and tear out another file's fixtures mid-test. The suite is small
+    // and runs in under a second, so the lost parallelism costs nothing.
+    fileParallelism: false,
   },
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
@@ -234,12 +239,12 @@ Create `src/styles/tokens.css`:
   --panel: #17171b;
   --panel-raised: #1f1f24;
   --line: #3e3f45;
-  --line-bright: #65666e; /* AA 3:1 non-text for control borders */
+  --line-bright: #65666e; /* AA 3:1 non-text for control borders; #4a4b51 was 2.28:1 */
 
   --text: #b7bbc1;
   --text-dim: #8d9198;
   --text-bright: #d2d5da;
-  --text-faint: #82858d; /* AA 4.5:1 on ground and panel */
+  --text-faint: #82858d; /* AA 4.5:1 on ground and panel; #63666d was 3.44:1 */
 
   --silver-start: #9aa0a8;
   --silver-mid: #e4e7ec;
@@ -408,6 +413,7 @@ export default defineConfig({
 Create `src/lib/db/schema.ts`:
 
 ```ts
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   text,
@@ -419,6 +425,7 @@ import {
   pgEnum,
   uniqueIndex,
   index,
+  check,
 } from "drizzle-orm/pg-core";
 
 export const orderStatus = pgEnum("order_status", [
@@ -536,7 +543,10 @@ export const discountCodes = pgTable(
     endsAt: timestamp("ends_at", { withTimezone: true }),
     active: boolean("active").notNull().default(true),
   },
-  (t) => [uniqueIndex("discount_codes_code_idx").on(t.code)],
+  (t) => [
+    uniqueIndex("discount_codes_code_idx").on(t.code),
+    check("discount_codes_code_lowercase", sql`${t.code} = lower(${t.code})`),
+  ],
 );
 
 export const orders = pgTable(
@@ -547,8 +557,9 @@ export const orders = pgTable(
       .notNull()
       .generatedByDefaultAsIdentity({ startWith: 1000 }),
     userId: text("user_id"),
-    // The cart this order came from, so the webhook can empty it once the
-    // payment actually succeeds.
+    // The cart this order came from, so the webhook can empty it once payment
+    // actually succeeds. Nulled rather than cascaded if the cart is deleted —
+    // an order must outlive the cart that produced it.
     cartId: uuid("cart_id").references(() => carts.id, { onDelete: "set null" }),
     email: text("email").notNull(),
     status: orderStatus("status").notNull().default("pending"),
@@ -590,19 +601,23 @@ export const orders = pgTable(
   ],
 );
 
-export const orderItems = pgTable("order_items", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orderId: uuid("order_id")
-    .notNull()
-    .references(() => orders.id, { onDelete: "cascade" }),
-  productId: uuid("product_id")
-    .notNull()
-    .references(() => products.id),
-  name: text("name").notNull(),
-  unitPriceCents: integer("unit_price_cents").notNull(),
-  quantity: integer("quantity").notNull(),
-  totalCents: integer("total_cents").notNull(),
-});
+export const orderItems = pgTable(
+  "order_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id),
+    name: text("name").notNull(),
+    unitPriceCents: integer("unit_price_cents").notNull(),
+    quantity: integer("quantity").notNull(),
+    totalCents: integer("total_cents").notNull(),
+  },
+  (t) => [index("order_items_order_id_idx").on(t.orderId)],
+);
 
 export const stripeEvents = pgTable("stripe_events", {
   id: text("id").primaryKey(),
@@ -888,7 +903,10 @@ describe("quote — discounts", () => {
   it("never discounts more than the subtotal", () => {
     const q = quote([sample], { ...fixed500, value: 10000 });
     expect(q.discountCents).toBe(600);
-    expect(q.totalCents).toBeGreaterThanOrEqual(0);
+    // subtotal 600, discount capped at 600 -> discountedSubtotal 0, which is
+    // below the free-shipping threshold, so flat shipping applies, tax is 0:
+    // total = 0 + 600 + 0 = 600.
+    expect(q.totalCents).toBe(600);
   });
 
   it("rounds a percentage discount to the nearest cent", () => {
@@ -945,25 +963,8 @@ describe("quote — invariants", () => {
 
   it("rejects a non-integer price, guarding against float money", () => {
     expect(() => quote([{ ...bottle, unitPriceCents: 45.5 }])).toThrow(
-      /must be a non-negative integer number of cents/i,
+      /must be an integer number of cents/i,
     );
-  });
-
-  it("rejects a negative price, which would otherwise yield a negative total", () => {
-    expect(() => quote([{ ...bottle, unitPriceCents: -700 }])).toThrow(
-      /must be a non-negative integer number of cents/i,
-    );
-  });
-
-  it("accepts a zero price, since a free item is legitimate", () => {
-    expect(quote([{ ...bottle, unitPriceCents: 0 }]).subtotalCents).toBe(0);
-  });
-
-  it("returns lines that do not alias the caller's array", () => {
-    const lines = [{ ...bottle }];
-    const q = quote(lines);
-    lines[0].quantity = 99;
-    expect(q.lines[0].quantity).toBe(1);
   });
 
   it("rejects negative tax", () => {
@@ -981,6 +982,25 @@ describe("quote — invariants", () => {
     ]) {
       expect(Number.isInteger(value)).toBe(true);
     }
+  });
+
+  it("rejects a negative price", () => {
+    expect(() => quote([{ ...bottle, unitPriceCents: -700 }])).toThrow(
+      /price must not be negative/i,
+    );
+  });
+
+  it("accepts a zero price for a free item", () => {
+    const q = quote([{ ...bottle, unitPriceCents: 0 }]);
+    expect(q.subtotalCents).toBe(0);
+  });
+
+  it("does not let the caller's array mutate the returned quote's lines", () => {
+    const lines = [{ ...bottle }];
+    const q = quote(lines);
+    lines.push({ ...sample });
+    lines[0].quantity = 99;
+    expect(q.lines).toEqual([bottle]);
   });
 });
 ```
@@ -1039,10 +1059,13 @@ export function quote(
         `Line ${line.productId}: quantity must be a positive integer`,
       );
     }
-    if (!Number.isInteger(line.unitPriceCents) || line.unitPriceCents < 0) {
+    if (!Number.isInteger(line.unitPriceCents)) {
       throw new Error(
-        `Line ${line.productId}: price must be a non-negative integer number of cents`,
+        `Line ${line.productId}: price must be an integer number of cents`,
       );
+    }
+    if (line.unitPriceCents < 0) {
+      throw new Error(`Line ${line.productId}: price must not be negative`);
     }
   }
   if (!Number.isInteger(taxCents) || taxCents < 0) {
@@ -1065,10 +1088,6 @@ export function quote(
       : FLAT_SHIPPING_CENTS;
 
   return {
-    // Deep-copied, not aliased: a quote is an immutable snapshot. A shallow
-    // [...lines] would still hand back the caller's line OBJECTS, so mutating
-    // line.quantity afterward would leave lines disagreeing with the totals
-    // computed from them.
     lines: lines.map((line) => ({ ...line })),
     subtotalCents,
     discountCents,
@@ -1225,6 +1244,16 @@ describe("validateDiscount", () => {
     const c = code({ minSubtotalCents: 4500 });
     expect(validateDiscount(c, 4500, NOW).ok).toBe(true);
   });
+
+  it("accepts a code whose startsAt is exactly now", () => {
+    const c = code({ startsAt: NOW });
+    expect(validateDiscount(c, 4500, NOW).ok).toBe(true);
+  });
+
+  it("accepts a code whose endsAt is exactly now", () => {
+    const c = code({ endsAt: NOW });
+    expect(validateDiscount(c, 4500, NOW).ok).toBe(true);
+  });
 });
 
 describe("discountFailureMessage", () => {
@@ -1247,6 +1276,12 @@ describe("discountFailureMessage", () => {
     for (const reason of reasons) {
       expect(discountFailureMessage(reason)).toBeTruthy();
     }
+  });
+
+  it("falls back to a generic message when below_minimum has no code", () => {
+    expect(discountFailureMessage("below_minimum")).toBe(
+      "Your order is below the minimum for that code.",
+    );
   });
 });
 ```
@@ -1366,17 +1401,28 @@ export async function lookupDiscount(
 /**
  * Increments redemption count, guarded by the cap so a race cannot exceed it.
  * Called from the webhook inside the same transaction that marks an order paid.
+ *
+ * Returns `true` when the row was updated, `false` when the cap was already
+ * exhausted (the UPDATE matched zero rows). This runs after the customer has
+ * already been charged and the order's stored total already reflects the
+ * discount, so a `false` result means the discount was applied to an order
+ * without being recorded here — the caller should log it, not throw: a throw
+ * would fail the webhook and trigger Stripe retries for something that must
+ * not block order fulfillment.
  */
 export async function redeemDiscount(
   tx: Tx,
   discountCodeId: string,
-): Promise<void> {
-  await tx
+): Promise<boolean> {
+  const rows = await tx
     .update(discountCodes)
     .set({ timesRedeemed: sql`${discountCodes.timesRedeemed} + 1` })
     .where(
       sql`${discountCodes.id} = ${discountCodeId} AND (${discountCodes.maxRedemptions} IS NULL OR ${discountCodes.timesRedeemed} < ${discountCodes.maxRedemptions})`,
-    );
+    )
+    .returning({ id: discountCodes.id });
+
+  return rows.length > 0;
 }
 ```
 
@@ -1612,6 +1658,7 @@ import {
   reserveStock,
   commitStock,
   releaseStock,
+  releaseExpiredReservations,
   OutOfStockError,
 } from "./index";
 
@@ -1730,6 +1777,34 @@ describe("reserveStock", () => {
     expect(rejected).toHaveLength(1);
     expect(await stock()).toMatchObject({ onHand: 2, reserved: 2 });
   });
+
+  // The two-buyer test above relies on incidental event-loop interleaving to
+  // create overlap. It's stable in practice, but a naive read-then-write
+  // implementation could theoretically pass if the two transactions happened
+  // to serialize. Raising the contention (12 racers over 5 units) makes
+  // serialization vanishingly unlikely, so this asserts the invariant that
+  // actually matters: never more reservations than stock, under real load.
+  it("never reserves more than stock exists under high contention", async () => {
+    await ctx.db
+      .update(inventory)
+      .set({ onHand: 5 })
+      .where(eq(inventory.productId, productId));
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 12 }, () =>
+        ctx.db.transaction((tx) => reserveStock(tx, [{ productId, quantity: 1 }])),
+      ),
+    );
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter(
+      (r) => r.status === "rejected" && r.reason instanceof OutOfStockError,
+    );
+
+    expect(fulfilled).toHaveLength(5);
+    expect(rejected).toHaveLength(7);
+    expect(await stock()).toMatchObject({ onHand: 5, reserved: 5 });
+  });
 });
 
 describe("commitStock", () => {
@@ -1811,6 +1886,73 @@ describe("releaseStock", () => {
     expect(await stock()).toMatchObject({ onHand: 1, reserved: 0 });
   });
 });
+
+describe("releaseExpiredReservations", () => {
+  it("does not cancel an order the webhook already marked paid mid-sweep", async () => {
+    const orderId = await createOrder(1);
+    await ctx.db.transaction(async (tx) => {
+      await reserveStock(tx, [{ productId, quantity: 1 }]);
+      await tx
+        .update(orders)
+        .set({
+          inventoryState: "reserved",
+          reservationExpiresAt: new Date(Date.now() - 1000),
+        })
+        .where(eq(orders.id, orderId));
+    });
+
+    // Force a real overlap rather than hoping for incidental interleaving:
+    // hold the webhook's transaction open after it writes (commit + paid)
+    // but before it commits. The sweep's outer SELECT is a separate read, so
+    // under READ COMMITTED it still sees the pre-webhook committed state
+    // (pending/reserved) and picks the order up as a candidate. The sweep's
+    // per-order UPDATE then contends for the same row the webhook already
+    // holds a lock on, blocks until the webhook commits, and — per Postgres's
+    // EvalPlanQual re-evaluation — re-checks its WHERE clause against the
+    // now-committed row and finds it no longer matches "reserved". This
+    // reproduces the production race deterministically.
+    let releaseHold: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    let webhookReady: () => void;
+    const webhookIsReady = new Promise<void>((resolve) => {
+      webhookReady = resolve;
+    });
+
+    const webhookPromise = ctx.db.transaction(async (tx) => {
+      await commitStock(tx, orderId);
+      await tx
+        .update(orders)
+        .set({ status: "paid" })
+        .where(eq(orders.id, orderId));
+      webhookReady();
+      await held;
+    });
+
+    await webhookIsReady;
+    const releasePromise = releaseExpiredReservations(ctx.db);
+    // Give the sweep's outer SELECT (and its per-order transaction's UPDATE
+    // attempt, which will now block on the webhook's row lock) time to reach
+    // Postgres before we let the webhook commit. This is not a race we're
+    // hoping to win — the webhook is held open deterministically until we
+    // call releaseHold(); the delay just guarantees the sweep's read happens
+    // against the pre-commit (still pending) snapshot instead of depending on
+    // which of two just-dispatched network requests the driver flushes first.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    releaseHold!();
+    const [cancelledCount] = await Promise.all([releasePromise, webhookPromise]);
+
+    const [order] = await ctx.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, orderId));
+
+    expect(order.status).toBe("paid");
+    expect(cancelledCount).toBe(0);
+    expect(await stock()).toMatchObject({ onHand: 1, reserved: 0 });
+  });
+});
 ```
 
 - [ ] **Step 3: Start the test database and run the tests to verify they fail**
@@ -1828,7 +1970,7 @@ Create `src/lib/inventory/index.ts`:
 
 ```ts
 import { and, eq, lt, sql } from "drizzle-orm";
-import { db, type Tx } from "@/lib/db/client";
+import { db, type Db, type Tx } from "@/lib/db/client";
 import { inventory, orders, orderItems } from "@/lib/db/schema";
 
 export const RESERVATION_WINDOW_MS = 15 * 60 * 1000;
@@ -1898,10 +2040,18 @@ export async function commitStock(tx: Tx, orderId: string): Promise<void> {
   }
 }
 
-/** Returns reserved units to the available pool. Idempotent. */
-export async function releaseStock(tx: Tx, orderId: string): Promise<void> {
+/**
+ * Returns reserved units to the available pool. Idempotent.
+ *
+ * @returns true if the reservation was actually released (the order was
+ *   still in the "reserved" inventory state), false if there was nothing to
+ *   do — e.g. the order was already committed or released by another
+ *   caller. Callers that conditionally act on the release (such as
+ *   cancelling the order) must check this before doing so.
+ */
+export async function releaseStock(tx: Tx, orderId: string): Promise<boolean> {
   const claimed = await claimInventoryState(tx, orderId, "reserved", "released");
-  if (!claimed) return;
+  if (!claimed) return false;
 
   const items = await tx
     .select()
@@ -1917,6 +2067,8 @@ export async function releaseStock(tx: Tx, orderId: string): Promise<void> {
       })
       .where(eq(inventory.productId, item.productId));
   }
+
+  return true;
 }
 
 /**
@@ -1943,9 +2095,16 @@ async function claimInventoryState(
  * Releases reservations for pending orders past their expiry window, so an
  * abandoned checkout does not hold a bottle forever. Called by the cron route
  * and lazily before reservation-sensitive reads.
+ *
+ * The candidate list is selected outside any transaction, so an order can
+ * change state (e.g. a Stripe webhook committing it to "paid") in the gap
+ * between that SELECT and this function reaching it. Each order is therefore
+ * only cancelled if `releaseStock` actually released it — and the status
+ * write is additionally guarded on `status = "pending"` as a second line of
+ * defence, so a stale candidate can never clobber a non-pending order.
  */
-export async function releaseExpiredReservations(): Promise<number> {
-  const expired = await db
+export async function releaseExpiredReservations(database: Db = db): Promise<number> {
+  const expired = await database
     .select({ id: orders.id })
     .from(orders)
     .where(
@@ -1956,17 +2115,24 @@ export async function releaseExpiredReservations(): Promise<number> {
       ),
     );
 
+  let cancelledCount = 0;
+
   for (const order of expired) {
-    await db.transaction(async (tx) => {
-      await releaseStock(tx, order.id);
-      await tx
+    await database.transaction(async (tx) => {
+      const released = await releaseStock(tx, order.id);
+      if (!released) return;
+
+      const cancelled = await tx
         .update(orders)
         .set({ status: "cancelled", cancelledAt: new Date() })
-        .where(eq(orders.id, order.id));
+        .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
+        .returning({ id: orders.id });
+
+      if (cancelled.length > 0) cancelledCount++;
     });
   }
 
-  return expired.length;
+  return cancelledCount;
 }
 ```
 
@@ -1995,7 +2161,7 @@ git commit -m "feat: transactional inventory with reservation expiry"
 ## Task 7: Cart identity and line management
 
 **Files:**
-- Create: `src/lib/cart/index.ts`, `src/lib/cart/cart.test.ts`
+- Create: `src/lib/cookies.ts`, `src/lib/cart/index.ts`, `src/lib/cart/cart.test.ts`
 
 **Interfaces:**
 - Consumes: `db`, `carts`, `cartItems`, `getProductsByIds`, `quote`
@@ -2007,6 +2173,36 @@ git commit -m "feat: transactional inventory with reservation expiry"
   - `addItem(cartId: string, productId: string, quantity: number): Promise<void>`
   - `setQuantity(cartId: string, productId: string, quantity: number): Promise<void>`
   - `clearCart(cartId: string): Promise<void>`
+
+- [ ] **Step 0: Create the cookie-name module**
+
+A `"use server"` file may export **only async functions** — Next.js rejects a
+plain `const` export from a server-action module at build time. Cookie names
+therefore live in their own module, created here because `CART_COOKIE` is the
+first of them to be needed.
+
+Create `src/lib/cookies.ts`:
+
+```ts
+/**
+ * Cookie names live here rather than beside the actions that read them.
+ *
+ * A `"use server"` module may export only async functions — Next.js rejects a
+ * plain `const` export from a server-action file at build time — so any name
+ * shared between an action and a Server Component needs a neutral home.
+ */
+export const CART_COOKIE = "cs_cart";
+export const DISCOUNT_COOKIE = "cs_discount";
+export const PENDING_ORDER_COOKIE = "cs_pending_order";
+
+/**
+ * Orders this browser is allowed to view, as a comma-separated list of order
+ * ids. The id is a v4 UUID, so the cookie value IS the credential — a cookie
+ * naming an order by its customer-facing number would be trivially forgeable,
+ * since httpOnly stops page scripts but not a hand-written request.
+ */
+export const ORDER_ACCESS_COOKIE = "cs_order_access";
+```
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2131,13 +2327,15 @@ Create `src/lib/cart/index.ts`:
 
 ```ts
 import { cookies } from "next/headers";
-import { eq, and, sql, inArray } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { carts, cartItems } from "@/lib/db/schema";
 import { getProductsByIds } from "@/lib/catalog";
 import type { QuoteLine } from "@/lib/pricing/quote";
+import { CART_COOKIE } from "@/lib/cookies";
 
-export const CART_COOKIE = "cs_cart";
+export { CART_COOKIE };
+
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 /**
@@ -2152,8 +2350,8 @@ export const MAX_LINE_QUANTITY = 99;
  * rendering a Server Component.
  *
  * Next.js only permits cookies().set() inside a Server Action or Route
- * Handler — calling it during render throws. So pages and layouts must use
- * this read-only path, and only mutations may create a cart.
+ * Handler — calling it during render throws. Pages and layouts must therefore
+ * use this read-only path, and only mutations may create a cart.
  */
 export async function getCartId(): Promise<string | null> {
   const jar = await cookies();
@@ -2350,6 +2548,21 @@ export type WebhookEvent = {
  * The boundary around Stripe. Every other module depends on this interface, so
  * tests substitute FakePayments and run with no network access.
  */
+/**
+ * Thrown when a PaymentIntent can no longer be modified because it reached a
+ * terminal state — typically the order was already paid. Callers should treat
+ * this as "this order is finished", not as a retryable failure.
+ */
+export class PaymentIntentNotUpdatableError extends Error {
+  constructor(
+    public readonly paymentIntentId: string,
+    public readonly status: string,
+  ) {
+    super(`PaymentIntent ${paymentIntentId} is ${status} and cannot be updated`);
+    this.name = "PaymentIntentNotUpdatableError";
+  }
+}
+
 export interface PaymentsAdapter {
   calculateTax(args: {
     lines: QuoteLine[];
@@ -2387,10 +2600,13 @@ import type {
   IntentResult,
   WebhookEvent,
 } from "./types";
+import { PaymentIntentNotUpdatableError } from "./types";
+
+const TERMINAL_INTENT_STATUSES = new Set(["succeeded", "canceled", "processing"]);
 
 // This is the ONLY file permitted to import the stripe package.
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2026-08-26.dahlia", // must match the installed SDK's LatestApiVersion
+  apiVersion: "2026-08-26.dahlia",
 });
 
 export class StripePayments implements PaymentsAdapter {
@@ -2446,19 +2662,30 @@ export class StripePayments implements PaymentsAdapter {
   >[0]): Promise<IntentResult> {
     const metadata = { orderId, orderNumber: String(orderNumber) };
 
-    const intent = paymentIntentId
-      ? await stripe.paymentIntents.update(paymentIntentId, {
-          amount: amountCents,
-          receipt_email: email,
-          metadata,
-        })
-      : await stripe.paymentIntents.create({
-          amount: amountCents,
-          currency: "usd",
-          receipt_email: email,
-          metadata,
-          automatic_payment_methods: { enabled: true },
-        });
+    let intent: Stripe.PaymentIntent;
+    if (paymentIntentId) {
+      const existing = await stripe.paymentIntents.retrieve(paymentIntentId);
+      if (TERMINAL_INTENT_STATUSES.has(existing.status)) {
+        // Do NOT fall back to creating a replacement intent here. If the
+        // original already succeeded, the customer has paid; quietly minting
+        // a second intent invites a double charge. Callers must treat this
+        // as terminal, not retryable.
+        throw new PaymentIntentNotUpdatableError(paymentIntentId, existing.status);
+      }
+      intent = await stripe.paymentIntents.update(paymentIntentId, {
+        amount: amountCents,
+        receipt_email: email,
+        metadata,
+      });
+    } else {
+      intent = await stripe.paymentIntents.create({
+        amount: amountCents,
+        currency: "usd",
+        receipt_email: email,
+        metadata,
+        automatic_payment_methods: { enabled: true },
+      });
+    }
 
     return {
       paymentIntentId: intent.id,
@@ -2484,17 +2711,22 @@ export class StripePayments implements PaymentsAdapter {
       process.env.STRIPE_WEBHOOK_SECRET!,
     );
 
-    const object = event.data.object as Record<string, unknown>;
+    const object = event.data.object as unknown as Record<string, unknown>;
     const paymentIntentId =
       event.type.startsWith("payment_intent.")
         ? (object.id as string)
         : ((object.payment_intent as string) ?? null);
 
+    // For a refund event, the charge's `amount` is its original total, not
+    // what was refunded. `amount_refunded` is the actual refunded amount.
+    const amountField =
+      event.type === "charge.refunded" ? object.amount_refunded : object.amount;
+
     return {
       id: event.id,
       type: event.type,
       paymentIntentId,
-      amountCents: typeof object.amount === "number" ? object.amount : null,
+      amountCents: typeof amountField === "number" ? amountField : null,
       metadata: (object.metadata as Record<string, string>) ?? {},
     };
   }
@@ -2512,13 +2744,18 @@ import type {
   IntentResult,
   WebhookEvent,
 } from "./types";
+import { PaymentIntentNotUpdatableError } from "./types";
+
+const TERMINAL_INTENT_STATUSES = new Set(["succeeded", "canceled", "processing"]);
+
+type FakeIntent = { amountCents: number; orderId: string; status: string };
 
 /**
  * In-memory adapter for tests. Tax is a flat 8% of the taxable base so
  * assertions stay predictable.
  */
 export class FakePayments implements PaymentsAdapter {
-  public intents = new Map<string, { amountCents: number; orderId: string }>();
+  public intents = new Map<string, FakeIntent>();
   public refunds: { paymentIntentId: string; amountCents: number }[] = [];
   private counter = 0;
 
@@ -2542,9 +2779,30 @@ export class FakePayments implements PaymentsAdapter {
   }: Parameters<
     PaymentsAdapter["createOrUpdateIntent"]
   >[0]): Promise<IntentResult> {
+    if (paymentIntentId) {
+      const existing = this.intents.get(paymentIntentId);
+      if (existing && TERMINAL_INTENT_STATUSES.has(existing.status)) {
+        // Mirrors StripePayments: do NOT fall back to creating a replacement
+        // intent here. If the original already succeeded, the customer has
+        // paid; quietly minting a second intent invites a double charge.
+        throw new PaymentIntentNotUpdatableError(paymentIntentId, existing.status);
+      }
+    }
+
     const id = paymentIntentId ?? `pi_fake_${++this.counter}`;
-    this.intents.set(id, { amountCents, orderId });
+    const status = this.intents.get(id)?.status ?? "requires_payment_method";
+    this.intents.set(id, { amountCents, orderId, status });
     return { paymentIntentId: id, clientSecret: `${id}_secret` };
+  }
+
+  /** Test helper: flips an intent's status to "succeeded" so tests can set
+   * up the terminal-state scenario. */
+  markSucceeded(paymentIntentId: string): void {
+    const existing = this.intents.get(paymentIntentId);
+    if (!existing) {
+      throw new Error(`No fake intent ${paymentIntentId} to mark succeeded`);
+    }
+    existing.status = "succeeded";
   }
 
   async refund({
@@ -2855,6 +3113,46 @@ async function findReusablePendingOrder(orderId: string): Promise<Order | null> 
 }
 
 /**
+ * Thrown by `markOrderPaid` when a payment intent that Stripe says succeeded
+ * has no matching order at all. This should be impossible in normal
+ * operation, so we cannot silently swallow it: throwing rolls back the
+ * `stripe_events` insert in the same transaction, which makes Stripe retry
+ * the webhook and, if retries are exhausted, surfaces the event as failed in
+ * the Stripe dashboard for manual reconciliation. A silent 200 here would
+ * lose track of real money with no record anywhere.
+ */
+export class OrderNotFoundForPaymentError extends Error {
+  constructor(public readonly paymentIntentId: string) {
+    super(`No order found for payment intent ${paymentIntentId}`);
+    this.name = "OrderNotFoundForPaymentError";
+  }
+}
+
+/**
+ * Thrown by `markOrderPaid` when the order matching a succeeded payment
+ * intent exists but is not `pending` (e.g. it was cancelled by reservation
+ * expiry while Stripe was completing a slow payment) and is not already
+ * `paid` (which is the normal idempotent replay and returns `null` instead).
+ * Throwing — rather than returning `null` — rolls back the `stripe_events`
+ * insert in the same transaction, so Stripe retries the webhook instead of
+ * treating a stranded charge as handled. That keeps the charge recoverable:
+ * retries eventually surface it in the Stripe dashboard rather than letting
+ * it vanish with no order, no email, and nothing to reconcile against.
+ */
+export class StrandedPaymentError extends Error {
+  constructor(
+    public readonly orderId: string,
+    public readonly paymentIntentId: string,
+    public readonly status: string,
+  ) {
+    super(
+      `Order ${orderId} for payment intent ${paymentIntentId} is in state "${status}", not pending`,
+    );
+    this.name = "StrandedPaymentError";
+  }
+}
+
+/**
  * The only path that sets status 'paid'. Idempotent via the stripe_events
  * ledger — a replayed webhook returns null and changes nothing.
  */
@@ -2870,6 +3168,29 @@ export async function markOrderPaid(
       .returning({ id: stripeEvents.id });
 
     if (inserted.length === 0) return null; // Already processed.
+
+    const [existing] = await tx
+      .select()
+      .from(orders)
+      .where(eq(orders.stripePaymentIntentId, paymentIntentId))
+      .limit(1);
+
+    if (!existing) {
+      throw new OrderNotFoundForPaymentError(paymentIntentId);
+    }
+
+    // "fulfilled" is downstream of "paid": the order was paid and has since
+    // shipped. A late or replayed succeeded-event for it is still a no-op, not
+    // a stranded payment. Nothing sets "fulfilled" until the admin plan ships,
+    // but treating it as stranded then would throw and retry forever.
+    if (existing.status === "paid" || existing.status === "fulfilled") {
+      // Another event already did the work — idempotent no-op.
+      return null;
+    }
+
+    if (existing.status !== "pending") {
+      throw new StrandedPaymentError(existing.id, paymentIntentId, existing.status);
+    }
 
     const [order] = await tx
       .update(orders)
@@ -3027,6 +3348,12 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  // FakePayments is a module-scope singleton (vi.mock above captures one
+  // instance for the whole file), so its in-memory state must be reset here
+  // just like the database is truncated — otherwise `fake.intents.size`
+  // accumulates across tests instead of reflecting the current test alone.
+  fake.intents.clear();
+  fake.refunds.length = 0;
   const [product] = await ctx.db
     .insert(products)
     .values({
@@ -3208,7 +3535,6 @@ import {
   Head,
   Body,
   Container,
-  Section,
   Text,
   Hr,
   Row,
@@ -3217,7 +3543,6 @@ import {
 import { formatCents } from "@/lib/money";
 import { formatOrderNumber } from "@/lib/orders/format";
 import type { OrderWithItems } from "@/lib/orders";
-import type { Address } from "@/lib/db/schema";
 
 const styles = {
   body: { background: "#0a0a0c", color: "#b7bbc1", fontFamily: "Helvetica, Arial, sans-serif", margin: 0 },
@@ -3230,7 +3555,7 @@ const styles = {
 };
 
 export function OrderConfirmation({ order }: { order: OrderWithItems }) {
-  const address = order.shippingAddress as Address;
+  const address = order.shippingAddress;
 
   return (
     <Html>
@@ -3537,7 +3862,7 @@ Create `src/components/ui/Field.module.css`:
   width: 100%;
   padding: 0.8rem 0.9rem;
   background: var(--panel);
-  /* --line-bright, not --line: this is a control border and must clear 3:1. */
+  /* --line is 1.70:1 on panel — below the 3:1 WCAG needs for control borders. */
   border: 1px solid var(--line-bright);
   color: var(--text-bright);
   border-radius: 2px;
@@ -3788,6 +4113,7 @@ git rm src/app/page.tsx src/app/page.module.css
 
 - [ ] **Step 2: Create the add-to-cart Server Action**
 
+<!-- plan-drift: partial — Task 13 appends the discount action to this file, so this block is the intermediate state, not the final file. -->
 Create `src/app/(store)/actions.ts`:
 
 ```ts
@@ -4277,50 +4603,18 @@ git commit -m "feat: home, shop, and product pages"
 - Consumes: `getCartLines`, `quote`, `lookupDiscount`, `validateDiscount`, `discountFailureMessage`
 - Produces: `applyDiscountAction(prev, formData): Promise<DiscountFormState>`; discount code persisted in the `cs_discount` cookie
 
-- [ ] **Step 1a: Create the cookie-name module**
+- [ ] **Step 1: Add the discount Server Action**
 
-A `"use server"` file may export **only async functions** — Next.js rejects a
-plain `const` export from a server-action module at build time. Cookie names
-therefore live in their own module.
-
-Create `src/lib/cookies.ts`:
-
-```ts
-/**
- * Cookie names live here rather than beside the actions that read them.
- *
- * A `"use server"` module may export only async functions — Next.js rejects a
- * plain `const` export from a server-action file at build time — so any name
- * shared between an action and a Server Component needs a neutral home.
- */
-export const CART_COOKIE = "cs_cart";
-export const DISCOUNT_COOKIE = "cs_discount";
-export const PENDING_ORDER_COOKIE = "cs_pending_order";
-
-/**
- * Orders this browser is allowed to view, as a comma-separated list of order
- * ids. The id is a v4 UUID, so the cookie value IS the credential — a cookie
- * naming an order by its customer-facing number would be trivially forgeable,
- * since httpOnly stops page scripts but not a hand-written request.
- */
-export const ORDER_ACCESS_COOKIE = "cs_order_access";
-```
-
-Then update `src/lib/cart/index.ts` to import `CART_COOKIE` from
-`@/lib/cookies` instead of declaring it, and re-export it for compatibility:
-
-```ts
-import { CART_COOKIE } from "@/lib/cookies";
-export { CART_COOKIE };
-```
-
-- [ ] **Step 1b: Add the discount Server Action**
+`DISCOUNT_COOKIE` already exists in `src/lib/cookies.ts`, created in Task 7 —
+a `"use server"` file may export only async functions, so cookie names cannot
+live beside the actions that read them.
 
 Append to `src/app/(store)/actions.ts`:
 
 ```ts
+// Add to the existing imports at the top of the file:
 import { cookies } from "next/headers";
-import { getCartLines } from "@/lib/cart";
+import { getCartId, getCartLines } from "@/lib/cart";
 import { quote } from "@/lib/pricing/quote";
 import { DISCOUNT_COOKIE } from "@/lib/cookies";
 import {
@@ -4338,6 +4632,7 @@ export async function applyDiscountAction(
   const raw = String(formData.get("code") ?? "");
   const jar = await cookies();
 
+  // An empty submission clears whatever code was applied.
   if (!raw.trim()) {
     jar.delete(DISCOUNT_COOKIE);
     revalidatePath("/cart");
@@ -4352,7 +4647,10 @@ export async function applyDiscountAction(
   const result = validateDiscount(code, subtotalCents);
 
   if (!result.ok) {
+    // Rejecting a new code also drops any previously applied one, so the page
+    // has to re-render or the totals keep showing a discount that is now gone.
     jar.delete(DISCOUNT_COOKIE);
+    revalidatePath("/cart");
     return { error: discountFailureMessage(result.reason, code ?? undefined) };
   }
 
@@ -4371,6 +4669,9 @@ export async function applyDiscountAction(
  * Shared by the cart and checkout pages so both price identically. Read-only
  * on purpose — it runs during Server Component render, where setting a cookie
  * would throw.
+ *
+ * Re-validates against the current subtotal on every call, so a code that
+ * needed a $50 order stops applying by itself once the cart drops below it.
  */
 export async function getActiveDiscount() {
   const jar = await cookies();
@@ -4399,6 +4700,7 @@ import { useActionState } from "react";
 import { applyDiscountAction, type DiscountFormState } from "../actions";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
+import styles from "./page.module.css";
 
 export function DiscountForm({ applied }: { applied: string | null }) {
   const [state, action, pending] = useActionState<DiscountFormState, FormData>(
@@ -4407,7 +4709,7 @@ export function DiscountForm({ applied }: { applied: string | null }) {
   );
 
   return (
-    <form action={action} style={{ display: "grid", gap: "0.75rem" }}>
+    <form action={action} className={styles.discountForm}>
       <Field
         label="Discount code"
         name="code"
@@ -4456,6 +4758,11 @@ Create `src/app/(store)/cart/page.module.css`:
   color: var(--text-bright);
 }
 
+.lineUnit {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
 .qtyForm {
   display: flex;
   align-items: center;
@@ -4476,6 +4783,12 @@ Create `src/app/(store)/cart/page.module.css`:
   display: grid;
   gap: var(--space-5);
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.discountForm {
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
 }
 
 .totals {
@@ -4506,6 +4819,10 @@ Create `src/app/(store)/cart/page.module.css`:
   color: var(--text-dim);
 }
 
+.emptyCta {
+  margin-top: var(--space-5);
+}
+
 .checkoutCta {
   margin-top: var(--space-3);
 }
@@ -4514,9 +4831,8 @@ Create `src/app/(store)/cart/page.module.css`:
 Create `src/app/(store)/cart/page.tsx`:
 
 ```tsx
-import Link from "next/link";
 import type { Metadata } from "next";
-import { getCartId, getCartLines } from "@/lib/cart";
+import { getCartId, getCartLines, MAX_LINE_QUANTITY } from "@/lib/cart";
 import { quote, FREE_SHIPPING_THRESHOLD_CENTS } from "@/lib/pricing/quote";
 import { formatCents } from "@/lib/money";
 import { Button, ButtonLink } from "@/components/ui/Button";
@@ -4537,15 +4853,19 @@ export default async function CartPage() {
       <div className={styles.page}>
         <h1 className={styles.heading}>Cart</h1>
         <p className={styles.empty}>Your cart is empty.</p>
-        <p style={{ marginTop: "1.5rem" }}>
+        <p className={styles.emptyCta}>
           <ButtonLink href="/shop">Shop</ButtonLink>
         </p>
       </div>
     );
   }
 
+  // quote() evaluates free shipping on the post-discount subtotal, so this
+  // countdown has to use the same basis or it would promise a threshold the
+  // pricing module does not honour.
   const remaining =
-    FREE_SHIPPING_THRESHOLD_CENTS - (summary.subtotalCents - summary.discountCents);
+    FREE_SHIPPING_THRESHOLD_CENTS -
+    (summary.subtotalCents - summary.discountCents);
 
   return (
     <div className={styles.page}>
@@ -4555,7 +4875,7 @@ export default async function CartPage() {
         <div key={line.productId} className={styles.line}>
           <div>
             <div className={styles.lineName}>{line.name}</div>
-            <div style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
+            <div className={styles.lineUnit}>
               {formatCents(line.unitPriceCents)} each
             </div>
           </div>
@@ -4572,6 +4892,7 @@ export default async function CartPage() {
               name="quantity"
               defaultValue={line.quantity}
               min={0}
+              max={MAX_LINE_QUANTITY}
             />
             <Button type="submit" variant="quiet">
               Update
@@ -4675,11 +4996,17 @@ import { getActiveDiscount } from "../actions";
 import type { Address } from "@/lib/db/schema";
 
 const addressSchema = z.object({
-  email: z.string().email("Enter a valid email address."),
-  name: z.string().min(1, "Enter a name."),
-  line1: z.string().min(1, "Enter a street address."),
-  line2: z.string().optional(),
-  city: z.string().min(1, "Enter a city."),
+  email: z.email("Enter a valid email address."),
+  name: z.string().trim().min(1, "Enter a name."),
+  line1: z.string().trim().min(1, "Enter a street address."),
+  // An untouched optional input still posts "", which would otherwise be
+  // stored as a blank second address line.
+  line2: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || undefined),
+  city: z.string().trim().min(1, "Enter a city."),
   // Letters only, and normalised: Stripe Tax expects a canonical state code,
   // and a plain length check would accept "12" or pass "tx" through as typed.
   state: z
@@ -4687,7 +5014,10 @@ const addressSchema = z.object({
     .trim()
     .regex(/^[A-Za-z]{2}$/, "Use a two-letter state code.")
     .transform((value) => value.toUpperCase()),
-  postalCode: z.string().regex(/^\d{5}(-\d{4})?$/, "Enter a valid ZIP code."),
+  postalCode: z
+    .string()
+    .trim()
+    .regex(/^\d{5}(-\d{4})?$/, "Enter a valid ZIP code."),
 });
 
 export type CheckoutState =
@@ -4712,7 +5042,11 @@ export async function startCheckoutAction(
     for (const issue of parsed.error.issues) {
       fieldErrors[String(issue.path[0])] = issue.message;
     }
-    return { status: "error", error: "Check the highlighted fields.", fieldErrors };
+    return {
+      status: "error",
+      error: "Check the highlighted fields.",
+      fieldErrors,
+    };
   }
 
   const { email, ...rest } = parsed.data;
@@ -4818,20 +5152,31 @@ import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { formatCents } from "@/lib/money";
 import { startCheckoutAction, type CheckoutState } from "./actions";
+import styles from "./page.module.css";
 
 const stripePromise = loadStripe(
   process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!,
 );
 
+/**
+ * Hexes are duplicated from tokens.css because the Payment Element renders in
+ * a cross-origin iframe and cannot read our CSS custom properties. Keep these
+ * in step with the tokens: text-bright, panel, text-dim, line-bright, danger.
+ */
 const appearance = {
   theme: "night" as const,
   variables: {
-    colorPrimary: "#e4e7ec",
+    colorPrimary: "#d2d5da",
     colorBackground: "#17171b",
-    colorText: "#b7bbc1",
+    colorText: "#d2d5da",
+    colorTextSecondary: "#8d9198",
+    colorTextPlaceholder: "#8d9198",
     colorDanger: "#e0645c",
     borderRadius: "2px",
     fontFamily: "system-ui, sans-serif",
+  },
+  rules: {
+    ".Input": { border: "1px solid #65666e" },
   },
 };
 
@@ -4856,26 +5201,68 @@ export function CheckoutForm() {
     );
   }
 
-  const fieldErrors =
-    state.status === "error" ? (state.fieldErrors ?? {}) : {};
+  const fieldErrors = state.status === "error" ? (state.fieldErrors ?? {}) : {};
 
   return (
-    <form action={action} style={{ display: "grid", gap: "1rem" }}>
+    <form action={action} className={styles.form}>
       {state.status === "error" && !state.fieldErrors && (
-        <p role="alert" style={{ color: "var(--danger)" }}>
+        <p role="alert" className={styles.error}>
           {state.error}
         </p>
       )}
 
-      <Field label="Email" name="email" type="email" required error={fieldErrors.email} />
-      <Field label="Full name" name="name" required error={fieldErrors.name} />
-      <Field label="Address" name="line1" required error={fieldErrors.line1} />
-      <Field label="Apt, suite (optional)" name="line2" />
-      <Field label="City" name="city" required error={fieldErrors.city} />
-      <Field label="State" name="state" maxLength={2} required error={fieldErrors.state} />
-      <Field label="ZIP" name="postalCode" required error={fieldErrors.postalCode} />
+      <Field
+        label="Email"
+        name="email"
+        type="email"
+        autoComplete="email"
+        required
+        error={fieldErrors.email}
+      />
+      <Field
+        label="Full name"
+        name="name"
+        autoComplete="name"
+        required
+        error={fieldErrors.name}
+      />
+      <Field
+        label="Address"
+        name="line1"
+        autoComplete="address-line1"
+        required
+        error={fieldErrors.line1}
+      />
+      <Field
+        label="Apt, suite (optional)"
+        name="line2"
+        autoComplete="address-line2"
+      />
+      <Field
+        label="City"
+        name="city"
+        autoComplete="address-level2"
+        required
+        error={fieldErrors.city}
+      />
+      <Field
+        label="State"
+        name="state"
+        autoComplete="address-level1"
+        maxLength={2}
+        required
+        error={fieldErrors.state}
+      />
+      <Field
+        label="ZIP"
+        name="postalCode"
+        autoComplete="postal-code"
+        inputMode="numeric"
+        required
+        error={fieldErrors.postalCode}
+      />
 
-      <p style={{ color: "var(--text-faint)", fontSize: "0.8rem" }}>
+      <p className={styles.shippingNote}>
         We ship ground within the US only. Fragrance cannot travel by air.
       </p>
 
@@ -4922,6 +5309,8 @@ function PaymentStep({
     });
 
     if (result.error) {
+      // A declined card leaves the PaymentIntent reusable, so drop back into
+      // the form rather than tearing the Element down.
       setError(result.error.message ?? "Payment failed. Try another card.");
       setSubmitting(false);
       return;
@@ -4935,15 +5324,16 @@ function PaymentStep({
   }
 
   return (
-    <form onSubmit={handleSubmit} style={{ display: "grid", gap: "1.5rem" }}>
-      <p style={{ color: "var(--text-bright)" }}>
-        Total {formatCents(totalCents)}
-      </p>
+    <form onSubmit={handleSubmit} className={styles.paymentForm}>
+      <div className={styles.summary}>
+        <p className={styles.total}>Total {formatCents(totalCents)}</p>
+        <p className={styles.receiptNote}>A receipt will go to {email}.</p>
+      </div>
 
       <PaymentElement />
 
       {error && (
-        <p role="alert" style={{ color: "var(--danger)" }}>
+        <p role="alert" className={styles.error}>
           {error}
         </p>
       )}
@@ -4974,6 +5364,41 @@ Create `src/app/(store)/checkout/page.module.css`:
   color: var(--text-dim);
   font-weight: 400;
   margin-bottom: var(--space-5);
+}
+
+.form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.paymentForm {
+  display: grid;
+  gap: var(--space-5);
+}
+
+/* Total and receipt note read as one block, so they sit closer than the
+   form's row gap. */
+.summary {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.error {
+  color: var(--danger);
+}
+
+.shippingNote {
+  color: var(--text-faint);
+  font-size: 0.8rem;
+}
+
+.total {
+  color: var(--text-bright);
+}
+
+.receiptNote {
+  color: var(--text-faint);
+  font-size: 0.8rem;
 }
 ```
 
@@ -5348,6 +5773,7 @@ Create `src/app/(store)/order/[number]/PendingNotice.tsx`:
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import styles from "./page.module.css";
 
 /**
  * The webhook usually lands within a second or two of the customer arriving
@@ -5369,7 +5795,7 @@ export function PendingNotice() {
   }, [router]);
 
   return (
-    <p role="status" style={{ color: "var(--text-dim)" }}>
+    <p role="status" className={styles.pending}>
       Confirming your payment. This takes a moment.
     </p>
   );
@@ -5399,6 +5825,12 @@ Create `src/app/(store)/order/[number]/page.module.css`:
   font-size: 1.6rem;
   font-weight: 200;
   color: var(--text-bright);
+}
+
+.pending,
+.thanks {
+  margin-top: var(--space-3);
+  color: var(--text-dim);
 }
 
 .line,
@@ -5612,48 +6044,17 @@ export async function lookupOrderAction(
 Create `src/app/(store)/order-lookup/page.tsx`:
 
 ```tsx
-"use client";
+import type { Metadata } from "next";
+import { LookupForm } from "./LookupForm";
+import styles from "./page.module.css";
 
-import { useActionState } from "react";
-import { lookupOrderAction, type LookupState } from "./actions";
-import { Button } from "@/components/ui/Button";
-import { Field } from "@/components/ui/Field";
+export const metadata: Metadata = { title: "Find an order" };
 
 export default function OrderLookupPage() {
-  const [state, action, pending] = useActionState<LookupState, FormData>(
-    lookupOrderAction,
-    {},
-  );
-
   return (
-    <div style={{ maxWidth: 420, margin: "0 auto", padding: "4rem 1.5rem" }}>
-      <h1
-        style={{
-          fontSize: "0.7rem",
-          letterSpacing: "var(--track-mid)",
-          textTransform: "uppercase",
-          color: "var(--text-dim)",
-          fontWeight: 400,
-          marginBottom: "2.5rem",
-        }}
-      >
-        Find an order
-      </h1>
-
-      <form action={action} style={{ display: "grid", gap: "1rem" }}>
-        <Field label="Order number" name="orderNumber" placeholder="CS-1042" required />
-        <Field label="Email" name="email" type="email" required />
-
-        {state.error && (
-          <p role="alert" style={{ color: "var(--danger)" }}>
-            {state.error}
-          </p>
-        )}
-
-        <Button type="submit" variant="primary" disabled={pending}>
-          {pending ? "Looking" : "Find order"}
-        </Button>
-      </form>
+    <div className={styles.page}>
+      <h1 className={styles.heading}>Find an order</h1>
+      <LookupForm />
     </div>
   );
 }

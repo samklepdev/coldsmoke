@@ -416,3 +416,38 @@ green. Check what a guard is actually reading before trusting it.
 
 164 tests, tsc clean, lint clean, 10 routes, e2e 3/3 across three runs.
 40 files now byte-identical to the plan, up from 35 at the start of the day.
+
+## Plan drift resolved, and guarded (2026-09-20)
+
+Owner decision: living document plus an automated guard.
+
+Before: 35 of 67 plan code blocks matched the shipped source.
+After:  66 of 67. The remaining one is a declared partial.
+
+Sequence:
+1. Removed an exception instead of encoding it. cookies.ts was created in
+   Task 13 but CART_COOKIE first appears in Task 7, so Task 7's cart/index.ts
+   could never match the shipped file without importing a module that did not
+   exist yet. Moved the module's creation to Task 7 (new Step 0) and dropped
+   Task 13's retrofit step. Task 7 now matches exactly.
+2. Synced 26 files across 52 blocks (plan + briefs) from the shipped source.
+3. Rebuilt the two actions.ts blocks by hand. That file is genuinely created
+   in Task 12 and appended to in Task 13, so its Create block MUST be an
+   intermediate state. Both halves are now derived from the shipped file, and
+   the Create block carries a `<!-- plan-drift: partial — reason -->` marker.
+
+The guard is src/test/plan-drift.test.ts, so it runs in `npm test` and CI:
+  - Create blocks without a marker: byte-for-byte equality with the file.
+  - Partial and Append blocks: every line of code must still appear in the
+    shipped file, in order. Imports excluded, since later tasks merge them.
+  - Partial blocks must carry a stated reason, and are capped at 3 so the
+    holes in the guarantee cannot multiply quietly.
+
+VERIFIED THE GUARD ACTUALLY BITES, rather than trusting a green run — the
+lesson from the uncontrolled-input assertion earlier today. Three probes:
+  A. source changed, plan untouched  -> 1 failed  (the real-world failure)
+  B. plan changed, source untouched  -> 1 failed
+  C. drift inside the PARTIAL block  -> 1 failed  (weaker rule still bites)
+  D. baseline restored               -> 72 passed
+
+Suite is now 236 tests, of which 72 are this guard's parameterised cases.

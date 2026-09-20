@@ -62,6 +62,18 @@ npm run test:e2e        # Playwright smoke test
 npm run db:test:down
 ```
 
+`npm test` includes `src/test/plan-drift.test.ts`, which asserts that every
+code block in the implementation plan matches the file it claims to create.
+Plan 1 accumulated a dozen review fixes that were applied to the source and
+silently not to the plan, so re-running it would have reproduced defects that
+had already been found and fixed. **If that test fails, update the plan's code
+block to match the source — do not weaken the test.**
+
+A block may be marked with an HTML comment when it is deliberately an
+intermediate state (one file is created in Task 12 and appended to in Task
+13). Those are held to a weaker rule — their code must still appear verbatim
+in the shipped file — and the test caps how many may exist.
+
 The dev and test databases are separate Compose projects on separate ports and
 volumes. Starting one does not touch the other.
 
