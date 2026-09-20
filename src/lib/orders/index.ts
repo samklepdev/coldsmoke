@@ -160,6 +160,46 @@ async function findReusablePendingOrder(orderId: string): Promise<Order | null> 
 }
 
 /**
+ * Thrown by `markOrderPaid` when a payment intent that Stripe says succeeded
+ * has no matching order at all. This should be impossible in normal
+ * operation, so we cannot silently swallow it: throwing rolls back the
+ * `stripe_events` insert in the same transaction, which makes Stripe retry
+ * the webhook and, if retries are exhausted, surfaces the event as failed in
+ * the Stripe dashboard for manual reconciliation. A silent 200 here would
+ * lose track of real money with no record anywhere.
+ */
+export class OrderNotFoundForPaymentError extends Error {
+  constructor(public readonly paymentIntentId: string) {
+    super(`No order found for payment intent ${paymentIntentId}`);
+    this.name = "OrderNotFoundForPaymentError";
+  }
+}
+
+/**
+ * Thrown by `markOrderPaid` when the order matching a succeeded payment
+ * intent exists but is not `pending` (e.g. it was cancelled by reservation
+ * expiry while Stripe was completing a slow payment) and is not already
+ * `paid` (which is the normal idempotent replay and returns `null` instead).
+ * Throwing — rather than returning `null` — rolls back the `stripe_events`
+ * insert in the same transaction, so Stripe retries the webhook instead of
+ * treating a stranded charge as handled. That keeps the charge recoverable:
+ * retries eventually surface it in the Stripe dashboard rather than letting
+ * it vanish with no order, no email, and nothing to reconcile against.
+ */
+export class StrandedPaymentError extends Error {
+  constructor(
+    public readonly orderId: string,
+    public readonly paymentIntentId: string,
+    public readonly status: string,
+  ) {
+    super(
+      `Order ${orderId} for payment intent ${paymentIntentId} is in state "${status}", not pending`,
+    );
+    this.name = "StrandedPaymentError";
+  }
+}
+
+/**
  * The only path that sets status 'paid'. Idempotent via the stripe_events
  * ledger — a replayed webhook returns null and changes nothing.
  */
@@ -175,6 +215,25 @@ export async function markOrderPaid(
       .returning({ id: stripeEvents.id });
 
     if (inserted.length === 0) return null; // Already processed.
+
+    const [existing] = await tx
+      .select()
+      .from(orders)
+      .where(eq(orders.stripePaymentIntentId, paymentIntentId))
+      .limit(1);
+
+    if (!existing) {
+      throw new OrderNotFoundForPaymentError(paymentIntentId);
+    }
+
+    if (existing.status === "paid") {
+      // Another event already did the work — idempotent no-op.
+      return null;
+    }
+
+    if (existing.status !== "pending") {
+      throw new StrandedPaymentError(existing.id, paymentIntentId, existing.status);
+    }
 
     const [order] = await tx
       .update(orders)
