@@ -10,18 +10,19 @@ vi.mock("@/lib/db/client", async () => {
   return { db: shared.db };
 });
 
-type SendArgs = { to: string; url: string };
+/** Shared stub: every auth email reports a clean delivery. */
+const mockSend = async () => ({ delivered: true });
 vi.mock("@/lib/email/auth", () => ({
-  sendVerificationEmail: vi.fn(async (_args: SendArgs) => ({ delivered: true })),
-  sendPasswordResetEmail: vi.fn(async (_args: SendArgs) => ({ delivered: true })),
-  sendExistingAccountEmail: vi.fn(async (_args: SendArgs) => ({ delivered: true })),
+  sendVerificationEmail: vi.fn(mockSend),
+  sendPasswordResetEmail: vi.fn(mockSend),
+  sendExistingAccountEmail: vi.fn(mockSend),
 }));
 
 vi.mock("next/headers", () => ({
   headers: async () => new Headers(),
 }));
 
-const mergeGuestCart = vi.fn(async (_userId: string) => {});
+const mergeGuestCart = vi.fn<(userId: string) => Promise<void>>(async () => {});
 vi.mock("@/lib/cart/merge", () => ({
   mergeGuestCart: (userId: string) => mergeGuestCart(userId),
 }));

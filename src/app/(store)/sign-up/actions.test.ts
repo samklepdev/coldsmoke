@@ -11,12 +11,16 @@ vi.mock("@/lib/db/client", async () => {
 });
 
 type SendArgs = { to: string; url: string };
-const sendExistingAccountEmail = vi.fn(async (_args: SendArgs) => ({ delivered: true }));
-const sendVerificationEmail = vi.fn(async (_args: SendArgs) => ({ delivered: true }));
+/** Shared stub: every auth email reports a clean delivery. */
+const mockSend = async () => ({ delivered: true });
+/** These two record their arguments, so they declare them. */
+type Send = (args: SendArgs) => Promise<{ delivered: boolean }>;
+const sendExistingAccountEmail = vi.fn<Send>(mockSend);
+const sendVerificationEmail = vi.fn<Send>(mockSend);
 vi.mock("@/lib/email/auth", () => ({
   sendExistingAccountEmail: (args: SendArgs) => sendExistingAccountEmail(args),
   sendVerificationEmail: (args: SendArgs) => sendVerificationEmail(args),
-  sendPasswordResetEmail: vi.fn(async (_args: SendArgs) => ({ delivered: true })),
+  sendPasswordResetEmail: vi.fn(mockSend),
 }));
 
 vi.mock("next/headers", () => ({
