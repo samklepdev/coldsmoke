@@ -1,0 +1,11 @@
+/* Matches the spacing every other form in the store uses -- see
+   order-lookup and checkout. Without it the labels sit flush against the
+   input above them. */
+.form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.error {
+  color: var(--danger);
+}

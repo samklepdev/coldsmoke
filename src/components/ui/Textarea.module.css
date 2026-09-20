@@ -1,0 +1,35 @@
+.wrap {
+  display: block;
+}
+
+.label {
+  display: block;
+  font-size: 0.68rem;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: var(--space-2);
+}
+
+.input {
+  width: 100%;
+  min-height: 9rem;
+  padding: 0.85rem 0.9rem;
+  background: var(--panel);
+  /* --line-bright, not --line: a control border must clear 3:1. */
+  border: 1px solid var(--line-bright);
+  color: var(--text-bright);
+  font: inherit;
+  resize: vertical;
+}
+
+.invalid {
+  border-color: var(--danger);
+}
+
+.error {
+  display: block;
+  margin-top: var(--space-2);
+  font-size: 0.78rem;
+  color: var(--danger);
+}

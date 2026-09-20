@@ -87,7 +87,13 @@ export async function sendContactMessage(
   });
 
   try {
-    await getResend().emails.send({
+    // Resend reports API failures by RETURNING an error, not by throwing: a
+    // rejected address comes back as { data: null, error: {...} } with a 422.
+    // Measured on 2026-09-20 against the real API. So the catch below only
+    // covers network-level throws, and `error` has to be checked explicitly --
+    // otherwise deliveredAt would be set for mail that was never accepted,
+    // which is the one thing this column exists to tell us apart.
+    const { error } = await getResend().emails.send({
       from: "Coldsmoke <noreply@wearcoldsmoke.com>",
       to: BUSINESS.supportEmail,
       replyTo: parsed.data.email,
@@ -96,7 +102,12 @@ export async function sendContactMessage(
         : "Contact — general",
       text: parsed.data.message,
     });
-    await markDelivered(id);
+
+    if (error) {
+      console.error("[contact] stored but not delivered", { id, cause: error });
+    } else {
+      await markDelivered(id);
+    }
   } catch (err) {
     // The message IS received -- it is in the database. Telling the customer
     // otherwise would prompt them to send it again.
