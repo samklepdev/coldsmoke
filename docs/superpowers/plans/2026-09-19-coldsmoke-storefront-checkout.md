@@ -6355,14 +6355,13 @@ test("a guest can fill a cart and reach the checkout form", async ({ page }) => 
 test("the cart survives a reload and totals recalculate", async ({ page }) => {
   await addBottleToCart(page);
 
-  await page.getByLabel(/^Quantity of /).fill("2");
-  await page.getByRole("button", { name: "Update" }).click();
+  await page.getByRole("button", { name: /^One more / }).click();
 
   // Wait for the SERVER-rendered total before reloading, or the reload races
   // the re-render and reads the pre-update cart.
   //
-  // Not the input's value: it is uncontrolled, so it still holds the "2" that
-  // was just typed whether or not the action landed. Asserting it passes
+  // Not the stepper's count: it is optimistic, so it shows 2 the instant the
+  // button is clicked whether or not the action landed. Asserting it passes
   // either way, which is worse than not asserting at all.
   await expect(page.getByText("$90.00").first()).toBeVisible();
 
@@ -6372,30 +6371,45 @@ test("the cart survives a reload and totals recalculate", async ({ page }) => {
   await expect(page.getByText("Free")).toBeVisible();
 });
 
-test("a rejected quantity says why instead of silently doing nothing", async ({
+test("the stepper changes quantity and price without an update button", async ({
   page,
 }) => {
   await addBottleToCart(page);
 
   const subtotal = async () =>
     (await page.locator("main").innerText()).match(/Subtotal\s*\$([0-9.,]+)/)?.[1];
-  const quantity = page.getByLabel(/^Quantity of /);
 
+  await expect(page.getByRole("button", { name: "Update" })).toHaveCount(0);
   expect(await subtotal()).toBe("45.00");
 
-  // A cleared box used to submit happily: the server refused to parse it,
-  // re-rendered, and the customer saw no change and no reason why.
-  await quantity.fill("");
-  await page.getByRole("button", { name: "Update" }).click();
-  await expect
-    .poll(async () => quantity.evaluate((el: HTMLInputElement) => el.validationMessage))
-    .not.toBe("");
-  expect(await subtotal()).toBe("45.00");
+  await page.getByRole("button", { name: /^One more / }).click();
+  // Two bottles is $90, which also clears the free-shipping threshold.
+  await expect(page.getByText("$90.00").first()).toBeVisible();
+  await expect(page.getByText("Free")).toBeVisible();
 
-  // And a valid quantity still goes through.
-  await quantity.fill("3");
-  await page.getByRole("button", { name: "Update" }).click();
-  await expect(page.getByText("$135.00").first()).toBeVisible();
+  await page.getByRole("button", { name: /^One fewer / }).click();
+  // Not getByText("$45.00"): the unit price renders as "$45.00 each" and is
+  // visible at every quantity, so that assertion passes before the server has
+  // done anything and the subtotal read below races it. The subtotal is the
+  // only figure here that actually moves.
+  await expect.poll(subtotal).toBe("45.00");
+});
+
+test("the stepper cannot delete a line", async ({ page }) => {
+  await addBottleToCart(page);
+
+  // Removal is a separate, deliberate control, so one click past the end of a
+  // decrement run must not empty the cart.
+  await expect(page.getByRole("button", { name: /^One fewer / })).toBeDisabled();
+  await expect(page.getByText("Your cart is empty.")).toHaveCount(0);
+});
+
+test("Remove clears the line", async ({ page }) => {
+  await addBottleToCart(page);
+
+  await page.getByRole("button", { name: /^Remove / }).click();
+
+  await expect(page.getByText("Your cart is empty.")).toBeVisible();
 });
 
 test("an empty cart cannot reach checkout", async ({ page }) => {
