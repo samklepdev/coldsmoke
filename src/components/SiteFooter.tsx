@@ -11,6 +11,8 @@ export function SiteFooter() {
           <Link href="/shipping-returns">Shipping &amp; Returns</Link>
           <Link href="/order-lookup">Find an order</Link>
           <Link href="/contact">Contact</Link>
+          <Link href="/privacy">Privacy</Link>
+          <Link href="/terms">Terms</Link>
         </nav>
         <p>© {new Date().getFullYear()} Coldsmoke</p>
       </div>
