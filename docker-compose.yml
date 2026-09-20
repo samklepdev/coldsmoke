@@ -1,0 +1,26 @@
+# Distinct project name so this stack never collides with the test stack in
+# docker-compose.test.yml. Both declare a `postgres` service; without separate
+# project names Compose treats them as the same container and volume, and
+# starting one silently destroys the other.
+name: coldsmoke-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: coldsmoke-dev-db
+    environment:
+      POSTGRES_USER: coldsmoke
+      POSTGRES_PASSWORD: coldsmoke
+      POSTGRES_DB: coldsmoke
+    ports:
+      - "54328:5432"
+    volumes:
+      - coldsmoke-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coldsmoke -d coldsmoke"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  coldsmoke-dev-data:

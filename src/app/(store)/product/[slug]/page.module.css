@@ -1,0 +1,72 @@
+.page {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+  display: grid;
+  gap: var(--space-6);
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
+.visual {
+  aspect-ratio: 3 / 4;
+  background: linear-gradient(180deg, #17171b, #0a0a0c);
+  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+}
+
+.name {
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 200;
+  color: var(--text-bright);
+  letter-spacing: var(--track-tight);
+}
+
+.tagline {
+  color: var(--text-dim);
+  margin-top: var(--space-2);
+  font-style: italic;
+}
+
+.price {
+  margin-top: var(--space-4);
+  font-size: 1.25rem;
+  color: var(--text-bright);
+}
+
+.description {
+  margin-top: var(--space-4);
+  max-width: var(--measure);
+}
+
+.form {
+  margin-top: var(--space-5);
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.qty {
+  width: 5rem;
+  padding: 0.85rem 0.9rem;
+  background: var(--panel);
+  /* --line-bright, not --line: this is a control border and must clear 3:1. */
+  border: 1px solid var(--line-bright);
+  color: var(--text-bright);
+}
+
+.stock {
+  margin-top: var(--space-3);
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+
+.legal {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  max-width: var(--measure);
+}

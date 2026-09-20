@@ -1,0 +1,34 @@
+:root {
+  --ground: #0a0a0c;
+  --panel: #17171b;
+  --panel-raised: #1f1f24;
+  --line: #3e3f45;
+  --line-bright: #65666e; /* AA 3:1 non-text for control borders; #4a4b51 was 2.28:1 */
+
+  --text: #b7bbc1;
+  --text-dim: #8d9198;
+  --text-bright: #d2d5da;
+  --text-faint: #82858d; /* AA 4.5:1 on ground and panel; #63666d was 3.44:1 */
+
+  --silver-start: #9aa0a8;
+  --silver-mid: #e4e7ec;
+  --silver-end: #9aa0a8;
+
+  --danger: #e0645c;
+  --success: #7fb08a;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2.5rem;
+  --space-6: 4rem;
+  --space-7: 6rem;
+
+  --measure: 62ch;
+  --page-max: 1160px;
+
+  --track-wide: 0.42em;
+  --track-mid: 0.18em;
+  --track-tight: 0.04em;
+}

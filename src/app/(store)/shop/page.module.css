@@ -1,0 +1,60 @@
+.page {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+}
+
+.heading {
+  font-size: 0.7rem;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-bottom: var(--space-5);
+}
+
+.grid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.card {
+  display: block;
+  padding: var(--space-5) var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  transition: border-color 160ms ease;
+}
+
+.card:hover {
+  border-color: var(--line-bright);
+}
+
+.name {
+  color: var(--text-bright);
+  font-size: 1.1rem;
+  font-weight: 300;
+  letter-spacing: var(--track-tight);
+}
+
+.tagline {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  margin-top: var(--space-2);
+}
+
+.meta {
+  margin-top: var(--space-4);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  color: var(--text-bright);
+}
+
+.soldOut {
+  color: var(--text-faint);
+  font-size: 0.75rem;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+}

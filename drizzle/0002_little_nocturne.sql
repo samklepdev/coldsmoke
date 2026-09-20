@@ -1,0 +1,1 @@
+ALTER TABLE "discount_codes" ADD CONSTRAINT "discount_codes_code_lowercase" CHECK ("discount_codes"."code" = lower("discount_codes"."code"));

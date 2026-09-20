@@ -1,0 +1,37 @@
+.page {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+}
+
+.heading {
+  font-size: 0.7rem;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-bottom: var(--space-5);
+}
+
+.form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.paymentForm {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.error {
+  color: var(--danger);
+}
+
+.shippingNote {
+  color: var(--text-faint);
+  font-size: 0.8rem;
+}
+
+.total {
+  color: var(--text-bright);
+}
