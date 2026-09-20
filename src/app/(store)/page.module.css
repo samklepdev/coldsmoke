@@ -1,0 +1,57 @@
+.hero {
+  min-height: 78vh;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: var(--space-7) var(--space-4);
+  background:
+    radial-gradient(ellipse at 50% 0%, #1b1b21 0%, transparent 62%),
+    var(--ground);
+}
+
+.tagline {
+  margin-top: var(--space-4);
+  font-size: clamp(1.6rem, 5vw, 2.6rem);
+  font-weight: 200;
+  letter-spacing: var(--track-tight);
+  color: var(--text-bright);
+}
+
+.sub {
+  margin: var(--space-4) auto 0;
+  max-width: 46ch;
+  color: var(--text-dim);
+}
+
+.cta {
+  margin-top: var(--space-5);
+  display: flex;
+  gap: var(--space-3);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.notes {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: var(--space-7) var(--space-4);
+  display: grid;
+  gap: var(--space-5);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.note h2 {
+  font-size: 0.68rem;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-bottom: var(--space-3);
+}
+
+.note p {
+  color: var(--text-bright);
+  font-weight: 200;
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
