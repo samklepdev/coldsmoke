@@ -3655,8 +3655,10 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
 
 - [ ] **Step 3: Implement the send function**
 
-Create `src/lib/email/index.tsx` (**.tsx, not .ts** — resend's types for
-the `react` field expect a `ReactElement`, so this file contains JSX):
+**.tsx, not .ts** — resend's types for the `react` field expect a
+`ReactElement`, so this file contains JSX.
+
+Create `src/lib/email/index.tsx`:
 
 ```ts
 import { getResend, EMAIL_FROM } from "./client";
@@ -4989,7 +4991,7 @@ export function QuantityStepper({
 }
 ```
 
-Create `src/app/(store)/cart/page.tsx`:`
+Create `src/app/(store)/cart/page.tsx`:
 
 ```tsx
 import type { Metadata } from "next";
