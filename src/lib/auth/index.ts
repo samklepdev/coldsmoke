@@ -9,6 +9,7 @@ import {
   sendPasswordResetEmail,
   sendExistingAccountEmail,
 } from "@/lib/email/auth";
+import { claimGuestOrders } from "@/lib/orders/claim";
 
 /**
  * The Better Auth server instance. The only place `betterAuth()` is called.
@@ -64,6 +65,19 @@ export const auth = betterAuth({
     autoSignInAfterVerification: false,
     sendVerificationEmail: async ({ user, url }) => {
       await sendVerificationEmail({ to: user.email, url });
+    },
+    /**
+     * The moment the address stops being a claim and becomes proof.
+     *
+     * Database work only. Better Auth runs this from its own GET handler for
+     * the verification link, so anything needing cookies belongs in a Server
+     * Action instead, where cookie access is defined.
+     */
+    afterEmailVerification: async (user) => {
+      const claimed = await claimGuestOrders({ userId: user.id, email: user.email });
+      if (claimed > 0) {
+        console.info("[auth] claimed guest orders", { userId: user.id, claimed });
+      }
     },
   },
 
