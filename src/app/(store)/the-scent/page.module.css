@@ -1,0 +1,53 @@
+/* The pyramid sits outside .prose so it can run wider than the measure. */
+.pyramid {
+  margin: var(--space-5) 0;
+  max-width: 34rem;
+}
+
+.band {
+  margin: 0 auto;
+  padding: var(--space-3) var(--space-2);
+  text-align: center;
+}
+
+/* Widening bands are the whole idea: the shape carries the meaning, so the
+   widths are content, not decoration. */
+.top {
+  width: 52%;
+}
+
+.heart {
+  width: 74%;
+}
+
+.base {
+  width: 100%;
+}
+
+.rule {
+  height: 1px;
+  background: var(--line);
+  margin: 0 auto;
+}
+
+.ruleTop {
+  width: 66%;
+}
+
+.ruleHeart {
+  width: 88%;
+}
+
+.label {
+  display: block;
+  font-size: 0.62rem;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.notes {
+  margin-top: var(--space-2);
+  color: var(--text-bright);
+  line-height: 1.7;
+}

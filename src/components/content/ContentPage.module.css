@@ -1,0 +1,59 @@
+.page {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+}
+
+.title {
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 200;
+  color: var(--text-bright);
+  letter-spacing: var(--track-tight);
+}
+
+.lede {
+  margin-top: var(--space-3);
+  max-width: var(--measure);
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* The measure lives here rather than on .page so a bespoke section -- the
+   scent pyramid -- can opt out by sitting outside .prose. */
+.prose {
+  margin-top: var(--space-5);
+  max-width: var(--measure);
+}
+
+.prose h2 {
+  margin-top: var(--space-5);
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.prose h2:first-child {
+  margin-top: 0;
+}
+
+.prose p {
+  margin-top: var(--space-3);
+  line-height: 1.75;
+}
+
+.prose ul {
+  margin-top: var(--space-3);
+  padding-left: var(--space-3);
+  line-height: 1.75;
+}
+
+.prose li {
+  margin-top: var(--space-2);
+}
+
+.prose a {
+  color: var(--text-bright);
+  text-decoration: underline;
+}
