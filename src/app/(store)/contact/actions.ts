@@ -8,7 +8,7 @@ import {
   recordMessage,
   markDelivered,
 } from "@/lib/contact";
-import { getResend } from "@/lib/email/client";
+import { getResend, EMAIL_FROM } from "@/lib/email/client";
 import { BUSINESS } from "@/lib/business";
 
 const schema = z.object({
@@ -94,7 +94,12 @@ export async function sendContactMessage(
     // otherwise deliveredAt would be set for mail that was never accepted,
     // which is the one thing this column exists to tell us apart.
     const { error } = await getResend().emails.send({
-      from: "Coldsmoke <noreply@wearcoldsmoke.com>",
+      // EMAIL_FROM, not a literal: Resend rejects any sending domain that is
+      // not verified, so a hardcoded address here silently stops matching the
+      // one domain that was set up. `replyTo` below is what actually carries
+      // the conversation back to the customer, so the From only needs to be
+      // ours and deliverable.
+      from: EMAIL_FROM,
       to: BUSINESS.supportEmail,
       replyTo: parsed.data.email,
       subject: parsed.data.orderNumber
