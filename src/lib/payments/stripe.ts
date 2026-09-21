@@ -101,11 +101,12 @@ export class StripePayments implements PaymentsAdapter {
   async refund({
     paymentIntentId,
     amountCents,
+    idempotencyKey,
   }: Parameters<PaymentsAdapter["refund"]>[0]) {
-    const refund = await stripe.refunds.create({
-      payment_intent: paymentIntentId,
-      amount: amountCents,
-    });
+    const refund = await stripe.refunds.create(
+      { payment_intent: paymentIntentId, amount: amountCents },
+      { idempotencyKey },
+    );
     return { refundId: refund.id };
   }
 

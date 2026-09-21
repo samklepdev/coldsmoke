@@ -108,12 +108,72 @@ describe("FakePayments", () => {
     const result = await fake.refund({
       paymentIntentId: first.paymentIntentId,
       amountCents: 4500,
+      idempotencyKey: "refund:order_1:4500",
     });
 
     expect(result.refundId).toBeTruthy();
     expect(fake.refunds).toContainEqual({
       paymentIntentId: first.paymentIntentId,
       amountCents: 4500,
+      idempotencyKey: "refund:order_1:4500",
     });
+  });
+});
+
+describe("FakePayments refunds", () => {
+  it("records the idempotency key it was given", async () => {
+    // Two clicks on Refund are two calls. The key is what makes the second
+    // one return the first refund instead of issuing another.
+    const payments = new FakePayments();
+
+    await payments.refund({
+      paymentIntentId: "pi_1",
+      amountCents: 5100,
+      idempotencyKey: "refund:order-1:5100",
+    });
+
+    expect(payments.refunds).toEqual([
+      {
+        paymentIntentId: "pi_1",
+        amountCents: 5100,
+        idempotencyKey: "refund:order-1:5100",
+      },
+    ]);
+  });
+
+  it("returns the same refund for a repeated key", async () => {
+    // Mirrors Stripe: a repeated key returns the original refund rather than
+    // charging the customer's card back twice.
+    const payments = new FakePayments();
+    const args = {
+      paymentIntentId: "pi_1",
+      amountCents: 5100,
+      idempotencyKey: "refund:order-1:5100",
+    };
+
+    const first = await payments.refund(args);
+    const second = await payments.refund(args);
+
+    expect(second.refundId).toBe(first.refundId);
+    expect(payments.refunds).toHaveLength(1);
+  });
+
+  it("treats a different amount as a different refund", async () => {
+    // The key embeds the amount, so a partial refund followed by the rest
+    // must not be deduplicated into one.
+    const payments = new FakePayments();
+
+    await payments.refund({
+      paymentIntentId: "pi_1",
+      amountCents: 1000,
+      idempotencyKey: "refund:order-1:1000",
+    });
+    await payments.refund({
+      paymentIntentId: "pi_1",
+      amountCents: 4100,
+      idempotencyKey: "refund:order-1:4100",
+    });
+
+    expect(payments.refunds).toHaveLength(2);
   });
 });

@@ -189,6 +189,7 @@ There is no unit test here: the script's whole behaviour is process-level
 Create `src/lib/db/promote-admin.ts`:
 
 ```ts
+import "dotenv/config";
 import { eq, sql } from "drizzle-orm";
 import { db } from "./client";
 import { user } from "./schema";
@@ -306,13 +307,36 @@ Create `e2e/admin.spec.ts`:
 
 ```ts
 import { test, expect } from "@playwright/test";
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { user } from "@/lib/db/auth-schema";
 
 /**
  * The /admin boundary.
  *
- * The 404 assertion is the security one. A redirect would confirm the route
- * exists to anyone who tried it; the point is that a customer cannot tell
- * /admin apart from a path that was never registered.
+ * A signed-out visitor gets redirected to sign-in -- confirming the route
+ * exists is fine before anyone is authenticated. A signed-in customer
+ * instead has to get AdminLayout's notFound(), not a redirect: a redirect
+ * would confirm /admin is real to anyone who tried it, and the whole point
+ * of the 404 is that a customer cannot tell it apart from a path that was
+ * never registered.
+ *
+ * That second case needs a genuinely authenticated, non-admin session, which
+ * sign-up alone does not produce: with requireEmailVerification on, sign-up
+ * does not set a session cookie, and Resend refuses every send in this
+ * environment (no verified sending domain), so there is no inbox to click a
+ * link from. The DB write below stands in for that click.
+ *
+ * It also means the customer-vs-signed-out cases cannot be told apart by
+ * HTTP status alone. notFound() is thrown after an `await` (the session
+ * lookup), and by the time it fires Next has already sent a 200 and is
+ * streaming the not-found UI into the body -- see the "Status Codes" section
+ * of node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/loading.md.
+ * Confirmed with curl against both `next dev` and a production build: same
+ * 200, same chunked body, in both. So this asserts what the boundary
+ * actually guarantees -- no redirect, and the not-found UI renders instead
+ * of the admin shell -- rather than a status code Next documents as
+ * unreliable for exactly this case.
  */
 
 test("sends a signed-out visitor to sign-in", async ({ page }) => {
@@ -321,7 +345,7 @@ test("sends a signed-out visitor to sign-in", async ({ page }) => {
   await expect(page).toHaveURL(/\/sign-in\?next=/);
 });
 
-test("shows a signed-in customer a 404, not a redirect", async ({ page }) => {
+test("shows a signed-in customer the not-found page, not a redirect", async ({ page }) => {
   const email = `admin-guard-${Date.now()}@example.com`;
 
   await page.goto("/sign-up");
@@ -331,10 +355,70 @@ test("shows a signed-in customer a 404, not a redirect", async ({ page }) => {
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page.getByRole("status").or(page.getByRole("alert"))).toBeVisible();
 
-  const response = await page.goto("/admin/orders");
+  // The row can lag a beat behind the confirmation UI, so poll for it rather
+  // than racing the insert.
+  await expect
+    .poll(async () => {
+      const [row] = await db.select().from(user).where(eq(user.email, email));
+      return row?.id;
+    })
+    .toBeTruthy();
+  await db.update(user).set({ emailVerified: true }).where(eq(user.email, email));
 
-  expect(response?.status()).toBe(404);
+  await page.goto("/sign-in");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("correct horse battery");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).toHaveURL(/\/account\/orders$/);
+
+  await page.goto("/admin/orders");
+
   await expect(page).toHaveURL(/\/admin\/orders$/);
+  await expect(page.getByText("This page could not be found.")).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Admin" })).toHaveCount(0);
+});
+
+test("shows an admin the orders list", async ({ page }) => {
+  // The positive case. Without it the two tests above would still pass if the
+  // admin shell were broken for everyone -- "nobody can see it" is only half
+  // the guarantee, and the half that does not keep the business running.
+  const email = `admin-real-${Date.now()}@example.com`;
+
+  await page.goto("/sign-up");
+  await page.getByLabel("Your name").fill("Real Admin");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("correct horse battery");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("status").or(page.getByRole("alert"))).toBeVisible();
+
+  await expect
+    .poll(async () => {
+      const [row] = await db.select().from(user).where(eq(user.email, email));
+      return row?.id;
+    })
+    .toBeTruthy();
+  // Stands in for clicking the verification link and running db:promote-admin.
+  await db
+    .update(user)
+    .set({ emailVerified: true, role: "admin" })
+    .where(eq(user.email, email));
+
+  await page.goto("/sign-in");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("correct horse battery");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  // Wait for the session to actually land, or the next navigation races it
+  // and bounces off the gate straight back to sign-in.
+  await expect(page).toHaveURL(/\/account\/orders$/);
+
+  await page.goto("/admin/orders");
+
+  await expect(page).toHaveURL(/\/admin\/orders$/);
+  await expect(page.getByRole("heading", { name: "Orders" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Admin" })).toBeVisible();
+  await expect(page.getByLabel("Search orders")).toBeVisible();
+  // The not-found UI must NOT be what rendered.
+  await expect(page.getByText("This page could not be found.")).toHaveCount(0);
 });
 ```
 
@@ -399,6 +483,21 @@ export default function AdminIndexPage() {
 }
 ```
 
+- [ ] **Step 4b: Add a placeholder page at `/admin/orders`**
+
+The e2e test navigates to `/admin/orders`, which Task 7 builds. Until it
+exists Next has nothing to match under that path and serves the global 404
+without ever rendering `AdminLayout` — so `requireAdminUser`'s redirect and
+`notFound()` never run, and the boundary this task exists to build goes
+untested.
+
+Write a minimal placeholder at `src/app/(admin)/admin/orders/page.tsx`
+returning a single paragraph, with a comment saying Task 7 replaces it.
+
+Deliberately described rather than given as a `Create` block: Task 7
+overwrites this file, and a code block here would make the plan-drift guard
+compare the placeholder against the finished orders list and fail.
+
 - [ ] **Step 5: Create the stylesheet**
 
 Create `src/app/(admin)/admin/admin.module.css`:
@@ -418,7 +517,7 @@ Create `src/app/(admin)/admin/admin.module.css`:
 }
 
 .wordmark {
-  color: var(--bright);
+  color: var(--text-bright);
   font-size: 14px;
   letter-spacing: 4px;
   font-weight: 300;
@@ -432,7 +531,7 @@ Create `src/app/(admin)/admin/admin.module.css`:
 
 .who {
   margin-left: auto;
-  color: var(--muted);
+  color: var(--text-dim);
   font-size: 13px;
 }
 
@@ -441,16 +540,19 @@ Create `src/app/(admin)/admin/admin.module.css`:
 }
 ```
 
-Check the token names against `src/app/globals.css` before committing; use the
-variables that file actually defines rather than these if they differ.
+These four tokens are verified to exist in `src/styles/tokens.css`, which is
+where this project defines them — not `globals.css`. Use them as written.
 
 - [ ] **Step 6: Run the e2e test**
 
 ```bash
-npm run dev &
 npx playwright test e2e/admin.spec.ts
 ```
 Expected: PASS, 2 tests.
+
+Do not start a dev server yourself. `playwright.config.ts` declares a
+`webServer` running `npm run dev` with `reuseExistingServer`, so Playwright
+starts one if none is running and reuses yours if one is.
 
 - [ ] **Step 7: Commit**
 
@@ -552,14 +654,26 @@ fixtures against `testDb()`.
 Create `src/lib/orders/fulfill.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
-import { fulfillOrder } from "./fulfill";
 import { OrderNotFoundError, OrderNotFulfillableError } from "./errors";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
+
+// fulfill.ts reads `db` from @/lib/db/client, which points at DATABASE_URL
+// (the dev database) rather than TEST_DATABASE_URL. Without this mock the
+// fixtures below and fulfillOrder's own reads would land in two different
+// databases. Same pattern as claim.test.ts and access.test.ts, the other
+// files that import their module directly rather than through index.ts.
+vi.mock("@/lib/db/client", async () => {
+  const { testDb } = await import("@/test/db");
+  const shared = await testDb();
+  return { db: shared.db };
+});
+
+const { fulfillOrder } = await import("./fulfill");
 
 beforeAll(async () => {
   ctx = await testDb();
@@ -579,7 +693,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seedOrder(status: "pending" | "paid" | "fulfilled" | "refunded") {
@@ -1016,12 +1130,23 @@ git commit -m "feat: add the shipping confirmation email"
 Create `src/lib/orders/adminList.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
-import { listOrdersForAdmin } from "./adminList";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
+
+// adminList.ts reads `db` from @/lib/db/client, which points at DATABASE_URL
+// (the dev database) rather than TEST_DATABASE_URL. Without this mock the
+// fixtures below and the query under test would land in two different
+// databases. Same pattern as claim.test.ts and access.test.ts.
+vi.mock("@/lib/db/client", async () => {
+  const { testDb } = await import("@/test/db");
+  const shared = await testDb();
+  return { db: shared.db };
+});
+
+const { listOrdersForAdmin } = await import("./adminList");
 
 beforeAll(async () => {
   ctx = await testDb();
@@ -1041,7 +1166,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seed(email: string, status: "paid" | "pending" | "fulfilled") {
@@ -1126,6 +1251,30 @@ describe("listOrdersForAdmin", () => {
 
     expect(rows).toHaveLength(1);
   });
+
+  it("returns zero results for a digit query beyond int4 range, without throwing", async () => {
+    // order_number is a Postgres integer (int4, max 2147483647). Unlike an
+    // unrecognised status, an out-of-range number is not "no filter" -- no
+    // order can ever have it, so the honest answer is zero rows.
+    await seed("a@example.com", "paid");
+
+    const result = await listOrdersForAdmin({ query: "99999999999" });
+
+    expect(result.rows).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+
+  it("still finds an order by number when the query is in range", async () => {
+    const seeded = await seed("buyer@example.com", "paid");
+    await seed("other@example.com", "paid");
+
+    const result = await listOrdersForAdmin({
+      query: String(seeded.orderNumber),
+    });
+
+    expect(result.rows.map((r) => r.id)).toEqual([seeded.id]);
+    expect(result.total).toBe(1);
+  });
 });
 ```
 
@@ -1144,6 +1293,10 @@ import { db } from "@/lib/db/client";
 import { orders, orderStatus, type Order } from "@/lib/db/schema";
 
 export const ADMIN_PAGE_SIZE = 50;
+
+// order_number is a Postgres integer (int4); Postgres throws rather than
+// truncating when a query value exceeds its range.
+const INT4_MAX = 2147483647;
 
 type OrderStatus = (typeof orderStatus.enumValues)[number];
 
@@ -1165,7 +1318,9 @@ function asStatus(value: string | undefined): OrderStatus | null {
  *
  * Both filters arrive from the URL and are therefore untrusted. An
  * unrecognised status means no filter rather than an error: a stale or
- * hand-edited link should show orders, not a crash.
+ * hand-edited link should show orders, not a crash. A numeric query is
+ * different: it names one specific order, so a value no order_number could
+ * ever hold (out of int4 range) must answer with zero rows, not every row.
  */
 export async function listOrdersForAdmin(args: {
   query?: string;
@@ -1184,6 +1339,9 @@ export async function listOrdersForAdmin(args: {
 
   if (query) {
     if (/^\d+$/.test(query)) {
+      if (Number(query) > INT4_MAX) {
+        return { rows: [], total: 0, page, pageSize: ADMIN_PAGE_SIZE };
+      }
       filters.push(eq(orders.orderNumber, Number(query)));
     } else {
       filters.push(sql`${orders.email} ILIKE ${`${query}%`}`);
@@ -1217,7 +1375,7 @@ export async function listOrdersForAdmin(args: {
 - [ ] **Step 4: Run the test**
 
 Run: `npx vitest run src/lib/orders/adminList.test.ts`
-Expected: PASS, 7 tests.
+Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Build the page**
 
@@ -1347,7 +1505,7 @@ Create `src/app/(admin)/admin/orders/orders.module.css`:
 
 .count {
   margin-top: 16px;
-  color: var(--muted);
+  color: var(--text-dim);
   font-size: 13px;
 }
 ```
@@ -1388,7 +1546,21 @@ import { notFound } from "next/navigation";
 import { findOrderById } from "@/lib/orders";
 import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
+import { FulfillForm } from "./FulfillForm";
+import { RefundButton } from "./RefundButton";
 import styles from "./detail.module.css";
+
+// Matches the list page's `.toISOString().slice(0, 10)` date — a plain date
+// is what an admin scanning order history needs; millisecond precision is noise.
+function formatDate(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+// Shipped is the one timestamp where the time-of-day is genuinely useful
+// (e.g. confirming same-day dispatch), so keep it to the minute.
+function formatDateTime(date: Date) {
+  return date.toISOString().slice(0, 16).replace("T", " ");
+}
 
 export default async function AdminOrderDetailPage({
   params,
@@ -1412,18 +1584,18 @@ export default async function AdminOrderDetailPage({
         <dt>Customer</dt>
         <dd>{order.email}</dd>
         <dt>Placed</dt>
-        <dd>{order.createdAt.toISOString()}</dd>
+        <dd>{formatDate(order.createdAt)}</dd>
         {order.paidAt ? (
           <>
             <dt>Paid</dt>
-            <dd>{order.paidAt.toISOString()}</dd>
+            <dd>{formatDate(order.paidAt)}</dd>
           </>
         ) : null}
         {order.fulfilledAt ? (
           <>
             <dt>Shipped</dt>
             <dd>
-              {order.fulfilledAt.toISOString()} · {order.carrier} ·{" "}
+              {formatDateTime(order.fulfilledAt)} · {order.carrier} ·{" "}
               {order.trackingNumber}
             </dd>
           </>
@@ -1438,6 +1610,12 @@ export default async function AdminOrderDetailPage({
 
       <h2 className={styles.subheading}>Items</h2>
       <table className={styles.table}>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th className={styles.right}>Amount</th>
+          </tr>
+        </thead>
         <tbody>
           {order.items.map((item) => (
             <tr key={item.id}>
@@ -1488,6 +1666,28 @@ export default async function AdminOrderDetailPage({
         <br />
         {address.city}, {address.state} {address.postalCode}
       </address>
+
+      {/* Only a paid order can ship. fulfillOrder enforces this too; the
+          condition here just avoids offering an action that would be refused. */}
+      {order.status === "paid" ? (
+        <>
+          <h2 className={styles.subheading}>Fulfil</h2>
+          <FulfillForm orderId={order.id} />
+        </>
+      ) : null}
+
+      {/* A refunded or unpaid order has nothing left to give back. refundOrder
+          enforces this too; the condition just avoids offering a refused action. */}
+      {(order.status === "paid" || order.status === "fulfilled") &&
+      order.totalCents > order.refundedCents ? (
+        <>
+          <h2 className={styles.subheading}>Refund</h2>
+          <RefundButton
+            orderId={order.id}
+            amountCents={order.totalCents - order.refundedCents}
+          />
+        </>
+      ) : null}
     </section>
   );
 }
@@ -1509,7 +1709,7 @@ Create `src/app/(admin)/admin/orders/[id]/detail.module.css`:
 }
 
 .status {
-  color: var(--muted);
+  color: var(--text-dim);
   font-size: 12px;
   letter-spacing: 2px;
   text-transform: uppercase;
@@ -1519,7 +1719,7 @@ Create `src/app/(admin)/admin/orders/[id]/detail.module.css`:
   font-size: 12px;
   letter-spacing: 2px;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text-dim);
   margin: 24px 0 8px;
 }
 
@@ -1531,7 +1731,7 @@ Create `src/app/(admin)/admin/orders/[id]/detail.module.css`:
 }
 
 .facts dt {
-  color: var(--muted);
+  color: var(--text-dim);
 }
 
 .table {
@@ -1540,7 +1740,9 @@ Create `src/app/(admin)/admin/orders/[id]/detail.module.css`:
   font-size: 14px;
 }
 
+.table th,
 .table td {
+  text-align: left;
   padding: 6px 0;
   border-bottom: 1px solid var(--line);
 }
@@ -1591,8 +1793,15 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vites
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
+import { FakePayments } from "@/lib/payments/fake";
+import { setPayments } from "@/lib/payments";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
+
+// The action reaches the database through @/lib/db/client, which resolves
+// DATABASE_URL -- the dev database -- while testDb() connects to the test one.
+// Without this the fixtures below and the code under test would sit in two
+// different databases and the assertions would mean nothing.
 vi.mock("@/lib/db/client", async () => {
   const { testDb } = await import("@/test/db");
   const shared = await testDb();
@@ -1604,19 +1813,25 @@ vi.mock("@/lib/email/shipping", () => ({
   sendShippingConfirmation: () => sendShippingConfirmation(),
 }));
 
+// A spy rather than a plain stub, so the gate itself can be asserted. Mocking
+// the module wholesale is what made deleting requireAdminUser from an action
+// invisible to the whole suite.
+const requireAdminUser = vi.fn(async () => ({
+  id: "admin1",
+  email: "admin@example.com",
+  name: "Admin",
+  role: "admin",
+  emailVerified: true,
+}));
 vi.mock("@/lib/auth/session", () => ({
-  requireAdminUser: async () => ({
-    id: "admin1",
-    email: "admin@example.com",
-    name: "Admin",
-    role: "admin",
-    emailVerified: true,
-  }),
+  requireAdminUser: () => requireAdminUser(),
 }));
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-const { fulfillAction } = await import("./actions");
+const { fulfillAction, resendShippingAction, refundAction } = await import(
+  "./actions"
+);
 
 const ADDRESS = {
   name: "Test Buyer",
@@ -1624,7 +1839,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seedOrder(status: "paid" | "pending") {
@@ -1660,6 +1875,8 @@ beforeEach(async () => {
   await ctx.truncate();
   sendShippingConfirmation.mockReset();
   sendShippingConfirmation.mockResolvedValue({ delivered: true });
+  requireAdminUser.mockClear();
+  setPayments(new FakePayments());
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -1688,8 +1905,9 @@ describe("fulfillAction", () => {
   });
 
   it("keeps the fulfilment when the email fails", async () => {
-    // The parcel shipped. Losing that because Resend was down would be far
-    // worse than an unsent email, and the admin can resend.
+    // The parcel shipped. Losing that record because Resend was down would be
+    // far worse than an unsent email, and the admin can resend. This is the
+    // whole reason the send happens after the transaction commits.
     const order = await seedOrder("paid");
     sendShippingConfirmation.mockResolvedValueOnce({ delivered: false });
 
@@ -1700,7 +1918,9 @@ describe("fulfillAction", () => {
 
     const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
     expect(row.status).toBe("fulfilled");
+    expect(row.carrier).toBe("USPS");
     expect(row.trackingNumber).toBe("TRACK1");
+    expect(row.fulfilledAt).toBeInstanceOf(Date);
   });
 
   it("refuses an order that is not paid, and sends no email", async () => {
@@ -1726,6 +1946,74 @@ describe("fulfillAction", () => {
     expect(state).toMatchObject({ status: "error" });
     expect(sendShippingConfirmation).not.toHaveBeenCalled();
   });
+
+  it("rejects a malformed order id without touching the database", async () => {
+    const state = await fulfillAction(
+      { status: "idle" },
+      form({ orderId: "not-a-uuid", carrier: "USPS", trackingNumber: "TRACK1" }),
+    );
+
+    expect(state).toMatchObject({ status: "error" });
+    expect(sendShippingConfirmation).not.toHaveBeenCalled();
+  });
+});
+
+describe("resendShippingAction", () => {
+  it("refuses an order that has not shipped", async () => {
+    // Without this guard a POST against a paid order emails the customer
+    // "your order is on its way" with a blank carrier and tracking number.
+    const order = await seedOrder("paid");
+
+    const state = await resendShippingAction(
+      { status: "idle" },
+      form({ orderId: order.id }),
+    );
+
+    expect(state).toMatchObject({ status: "error" });
+    expect(sendShippingConfirmation).not.toHaveBeenCalled();
+  });
+
+  it("resends for an order that really did ship", async () => {
+    const order = await seedOrder("paid");
+    await fulfillAction(
+      { status: "idle" },
+      form({ orderId: order.id, carrier: "USPS", trackingNumber: "TRACK1" }),
+    );
+    sendShippingConfirmation.mockClear();
+
+    const state = await resendShippingAction(
+      { status: "idle" },
+      form({ orderId: order.id }),
+    );
+
+    expect(state).toEqual({ status: "fulfilled" });
+    expect(sendShippingConfirmation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the admin gate", () => {
+  it("is called by every action that changes an order", async () => {
+    // The layout gates /admin, but a Server Action is its own entry point:
+    // reachable by POST without the layout ever rendering. Mocking the session
+    // module wholesale means deleting the call would leave every other test
+    // green, so assert the call itself.
+    const order = await seedOrder("paid");
+    requireAdminUser.mockClear();
+
+    await fulfillAction(
+      { status: "idle" },
+      form({ orderId: order.id, carrier: "USPS", trackingNumber: "T" }),
+    );
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
+
+    requireAdminUser.mockClear();
+    await resendShippingAction({ status: "idle" }, form({ orderId: order.id }));
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
+
+    requireAdminUser.mockClear();
+    await refundAction({ status: "idle" }, form({ orderId: order.id }));
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
+  });
 });
 ```
 
@@ -1746,10 +2034,12 @@ import { revalidatePath } from "next/cache";
 import { requireAdminUser } from "@/lib/auth/session";
 import { findOrderById } from "@/lib/orders";
 import { fulfillOrder } from "@/lib/orders/fulfill";
+import { refundOrder } from "@/lib/orders/refund";
 import { sendShippingConfirmation } from "@/lib/email/shipping";
 import {
   OrderNotFoundError,
   OrderNotFulfillableError,
+  OrderNotRefundableError,
 } from "@/lib/orders/errors";
 
 const schema = z.object({
@@ -1766,8 +2056,10 @@ export type FulfillState =
   | { status: "error"; error: string };
 
 /**
+ * Marks an order shipped, then tries to tell the customer.
+ *
  * The layout already gates /admin, but a Server Action is its own entry
- * point: it is reachable by POST without rendering the layout at all. So the
+ * point: it is reachable by POST without the layout ever rendering. So the
  * check is repeated here rather than inherited.
  */
 export async function fulfillAction(
@@ -1804,9 +2096,9 @@ export async function fulfillAction(
   revalidatePath(`/admin/orders/${parsed.data.orderId}`);
 
   /**
-   * The order is already fulfilled at this point, and nothing below may undo
-   * that. The parcel shipped whether or not Resend accepted the message, so
-   * a failed send is reported to the admin -- who can resend -- rather than
+   * The order is already fulfilled by this point, and nothing below may undo
+   * it. The parcel shipped whether or not Resend accepted the message, so a
+   * rejected send is reported to the admin -- who can resend -- rather than
    * rolled back or swallowed.
    */
   const order = await findOrderById(parsed.data.orderId);
@@ -1817,7 +2109,14 @@ export async function fulfillAction(
   return { status: delivered ? "fulfilled" : "fulfilled-undelivered" };
 }
 
-/** Sends the shipping confirmation again for an order already fulfilled. */
+/**
+ * Sends the shipping confirmation again for an order already fulfilled.
+ *
+ * The fulfilled check is not decoration. This is a Server Action, so it is
+ * reachable by POST against any order id; without it, an order that has not
+ * shipped would be emailed "your order is on its way" with a blank carrier
+ * and tracking number, because those columns are only written by fulfillOrder.
+ */
 export async function resendShippingAction(
   _prev: FulfillState,
   formData: FormData,
@@ -1832,9 +2131,56 @@ export async function resendShippingAction(
   const order = await findOrderById(orderId.data);
   if (!order) return { status: "error", error: "Unknown order." };
 
+  if (order.status !== "fulfilled" || !order.carrier || !order.trackingNumber) {
+    return {
+      status: "error",
+      error: "That order has not shipped, so there is no shipping email to resend.",
+    };
+  }
+
   const { delivered } = await sendShippingConfirmation(order);
 
   return { status: delivered ? "fulfilled" : "fulfilled-undelivered" };
+}
+
+export type RefundState =
+  | { status: "idle" }
+  /** Sent to Stripe. The order does not change until charge.refunded lands. */
+  | { status: "submitted"; amountCents: number }
+  | { status: "error"; error: string };
+
+/**
+ * Sends the refund and reports only that it was sent.
+ *
+ * The order still reads "paid" or "fulfilled" afterwards, because the webhook
+ * has not arrived yet. That is honest rather than sloppy: the refund is not
+ * final until Stripe says so, and writing the status here would make this a
+ * second writer that could disagree with the webhook about the same order.
+ */
+export async function refundAction(
+  _prev: RefundState,
+  formData: FormData,
+): Promise<RefundState> {
+  await requireAdminUser();
+
+  const orderId = z.uuid().safeParse(formData.get("orderId"));
+  if (!orderId.success) {
+    return { status: "error", error: "Unknown order." };
+  }
+
+  try {
+    const { amountCents } = await refundOrder({ orderId: orderId.data });
+    revalidatePath(`/admin/orders/${orderId.data}`);
+    return { status: "submitted", amountCents };
+  } catch (error) {
+    if (
+      error instanceof OrderNotRefundableError ||
+      error instanceof OrderNotFoundError
+    ) {
+      return { status: "error", error: error.message };
+    }
+    throw error;
+  }
 }
 ```
 
@@ -1887,8 +2233,11 @@ export function FulfillForm({ orderId }: { orderId: string }) {
 }
 
 /**
- * Shown when the parcel shipped but the email did not. The fulfilment is not
- * in question here -- only whether the customer was told.
+ * Shown when the parcel shipped but the email did not.
+ *
+ * The fulfilment is not in question here -- it is already committed. Only
+ * whether the customer was told, which is why the only action offered is to
+ * send it again rather than anything that would revisit the shipment.
  */
 function ResendPrompt({ orderId }: { orderId: string }) {
   const [state, action, pending] = useActionState<FulfillState, FormData>(
@@ -1907,7 +2256,7 @@ function ResendPrompt({ orderId }: { orderId: string }) {
         Marked as shipped, but the shipping email was rejected. The order is
         correct — only the notification failed.
       </p>
-      <Button type="submit" variant="secondary" disabled={pending}>
+      <Button type="submit" variant="outline" disabled={pending}>
         {pending ? "Sending" : "Resend shipping email"}
       </Button>
     </form>
@@ -1915,13 +2264,15 @@ function ResendPrompt({ orderId }: { orderId: string }) {
 }
 ```
 
-Check `src/components/ui/Button.tsx` for the variant names it accepts and use
-one that exists.
+`Button` accepts `variant="primary" | "outline" | "quiet"` — verified. There
+is no `"secondary"`. `Field` takes `label` and an optional `error`, plus the
+usual input attributes.
 
 - [ ] **Step 6: Mount it on the detail page**
 
-Append to `src/app/(admin)/admin/orders/[id]/page.tsx`, immediately before the
-closing `</section>`:
+Place this immediately before the closing `</section>`.
+
+Append to `src/app/(admin)/admin/orders/[id]/page.tsx`:
 
 ```tsx
       {order.status === "paid" ? (
@@ -1966,9 +2317,11 @@ git commit -m "feat: fulfil an order and report a failed shipping email"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `src/lib/payments/fake.test.ts` as a new top-level `describe`, after
-the existing `describe("FakePayments", …)` block. `FakePayments` is already
-imported at the top of that file, so no import change is needed.
+Add this as a new top-level `describe`, after the existing
+`describe("FakePayments", …)` block. `FakePayments` is already imported at the
+top of that file, so no import change is needed.
+
+Append to `src/lib/payments/fake.test.ts`:
 
 ```ts
 describe("FakePayments refunds", () => {
@@ -2110,31 +2463,28 @@ git commit -m "feat: give refunds an idempotency key"
 Create `src/lib/orders/refund.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
 import { FakePayments } from "@/lib/payments/fake";
 import { setPayments } from "@/lib/payments";
-import { refundOrder, recordRefund } from "./refund";
 import { OrderNotRefundableError } from "./errors";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
 let payments: FakePayments;
 
-beforeAll(async () => {
-  ctx = await testDb();
+// refund.ts reads `db` from @/lib/db/client, which points at DATABASE_URL
+// (the dev database) rather than TEST_DATABASE_URL. Without this mock the
+// fixtures below and the functions under test would land in two different
+// databases. Same pattern as claim.test.ts and access.test.ts.
+vi.mock("@/lib/db/client", async () => {
+  const { testDb } = await import("@/test/db");
+  const shared = await testDb();
+  return { db: shared.db };
 });
 
-afterAll(async () => {
-  await ctx.close();
-});
-
-beforeEach(async () => {
-  await ctx.truncate();
-  payments = new FakePayments();
-  setPayments(payments);
-});
+const { refundOrder, recordRefund } = await import("./refund");
 
 const ADDRESS = {
   name: "Test Buyer",
@@ -2142,7 +2492,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seedOrder(
@@ -2164,6 +2514,20 @@ async function seedOrder(
   return order;
 }
 
+beforeAll(async () => {
+  ctx = await testDb();
+});
+
+afterAll(async () => {
+  await ctx.close();
+});
+
+beforeEach(async () => {
+  await ctx.truncate();
+  payments = new FakePayments();
+  setPayments(payments);
+});
+
 describe("refundOrder", () => {
   it("refunds the whole remaining amount", async () => {
     const order = await seedOrder("paid");
@@ -2171,7 +2535,7 @@ describe("refundOrder", () => {
     const result = await refundOrder({ orderId: order.id });
 
     expect(result.amountCents).toBe(5100);
-    expect(payments.refunds[0]).toMatchObject({
+    expect(payments.refunds[0]).toEqual({
       paymentIntentId: "pi_test_1",
       amountCents: 5100,
       idempotencyKey: `refund:${order.id}:5100`,
@@ -2188,8 +2552,8 @@ describe("refundOrder", () => {
 
   it("writes no status of its own", async () => {
     // The webhook is the only writer of refund state. If this action wrote
-    // too, a refund issued from the Stripe dashboard would behave
-    // differently from one issued here.
+    // too, a refund issued from the Stripe dashboard would behave differently
+    // from one issued here, and the two writers could disagree.
     const order = await seedOrder("paid");
 
     await refundOrder({ orderId: order.id });
@@ -2205,7 +2569,7 @@ describe("refundOrder", () => {
     await expect(refundOrder({ orderId: order.id })).resolves.toBeDefined();
   });
 
-  it("refuses an unpaid order", async () => {
+  it("refuses an unpaid order and asks Stripe for nothing", async () => {
     const order = await seedOrder("pending");
 
     await expect(refundOrder({ orderId: order.id })).rejects.toThrow(
@@ -2220,15 +2584,16 @@ describe("refundOrder", () => {
     await expect(refundOrder({ orderId: order.id })).rejects.toThrow(
       OrderNotRefundableError,
     );
+    expect(payments.refunds).toHaveLength(0);
   });
 });
 
 describe("recordRefund", () => {
   it("sets the cumulative amount and does not accumulate it", async () => {
-    // Stripe reports amount_refunded as the running total for the charge, not
+    // Stripe reports amount_refunded as the RUNNING TOTAL for the charge, not
     // the delta of one refund. Two partials of 1000 then 1500 arrive as 1000
-    // then 2500. Adding them would give 3500 and wrongly mark the order
-    // fully refunded. DO NOT "simplify" this to +=.
+    // then 2500. Adding them would give 3500 and wrongly mark the order fully
+    // refunded. DO NOT "simplify" this to +=.
     const order = await seedOrder("paid");
 
     await recordRefund("pi_test_1", "evt_1", 1000);
@@ -2259,7 +2624,8 @@ describe("recordRefund", () => {
   });
 
   it("keeps the shipping record on a refunded order", async () => {
-    // The parcel really did ship. Erasing that would destroy the record of it.
+    // The parcel really did ship. Erasing the carrier and tracking number
+    // would destroy the record of it.
     const order = await seedOrder("fulfilled");
     await ctx.db
       .update(orders)
@@ -2270,6 +2636,7 @@ describe("recordRefund", () => {
 
     const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
     expect(row.status).toBe("refunded");
+    expect(row.carrier).toBe("USPS");
     expect(row.trackingNumber).toBe("TRACK1");
   });
 
@@ -2280,10 +2647,72 @@ describe("recordRefund", () => {
     expect(await recordRefund("pi_test_1", "evt_1", 5100)).toBeNull();
   });
 
+  it("does not double-apply a replayed event", async () => {
+    const order = await seedOrder("paid");
+    await recordRefund("pi_test_1", "evt_1", 1000);
+
+    await recordRefund("pi_test_1", "evt_1", 1000);
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(1000);
+  });
+
   it("throws when no order matches the payment intent", async () => {
     // Money moved with no order behind it. Throwing makes the webhook return
     // non-2xx so Stripe retries and surfaces it, rather than swallowing it.
-    await expect(recordRefund("pi_missing", "evt_1", 5100)).rejects.toThrow();
+    //
+    // Asserts the specific error, not merely that something threw: a bare
+    // toThrow() here would pass on a typo or a dropped connection and still
+    // look like this path was covered. This project has been caught by that
+    // family three times.
+    await expect(
+      recordRefund("pi_missing", "evt_1", 5100),
+    ).rejects.toMatchObject({ name: "OrderNotFoundForPaymentError" });
+  });
+});
+
+describe("recordRefund ordering and preconditions", () => {
+  it("never lets refundedCents go backwards", async () => {
+    // Stripe does not guarantee event order. Two dashboard partials of 1000
+    // then 1500 emit cumulative 1000 then 2500; delivered out of order an
+    // unconditional SET would leave 1000 on an order the 2500 event had
+    // already marked refunded -- books saying 1000 on a fully refunded order,
+    // which refundOrder then refuses to touch.
+    const order = await seedOrder("paid");
+
+    await recordRefund("pi_test_1", "evt_late", 2500);
+    await recordRefund("pi_test_1", "evt_early", 1000);
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(2500);
+  });
+
+  it("keeps the order refunded when a stale smaller event arrives after", async () => {
+    const order = await seedOrder("paid");
+
+    await recordRefund("pi_test_1", "evt_full", 5100);
+    await recordRefund("pi_test_1", "evt_stale", 1000);
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(5100);
+    expect(row.status).toBe("refunded");
+  });
+
+  it("refuses to refund an order that was never paid", async () => {
+    // If charge.refunded beats payment_intent.succeeded, writing "refunded"
+    // over "pending" strands the reservation forever and makes the retried
+    // succeeded event throw StrandedPaymentError until Stripe gives up.
+    // Throwing here instead returns non-2xx, so Stripe retries this event
+    // after the order has become paid.
+    const order = await seedOrder("pending");
+
+    await expect(recordRefund("pi_test_1", "evt_early_refund", 5100)).rejects.toThrow(
+      /not paid/i,
+    );
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.status).toBe("pending");
+    expect(row.refundedCents).toBe(0);
   });
 });
 ```
@@ -2308,10 +2737,10 @@ import { OrderNotFoundError, OrderNotRefundableError } from "./errors";
 /**
  * Asks Stripe for a refund. Writes nothing.
  *
- * The split is deliberate: this moves money, and recordRefund below moves
- * status. One writer means a refund issued from the Stripe dashboard lands
- * exactly like one issued from admin -- both arrive as charge.refunded and
- * take the same path.
+ * The split from recordRefund below is deliberate: this moves money, that
+ * moves status. One writer means a refund issued from the Stripe dashboard
+ * lands exactly like one issued from admin -- both arrive as charge.refunded
+ * and take the same path -- and the two can never disagree about an order.
  *
  * The idempotency key is stable for the same logical refund, so a double
  * submit returns the original refund rather than issuing a second one or
@@ -2354,13 +2783,27 @@ export async function refundOrder(args: {
  * The only path that sets status 'refunded'. Idempotent via the stripe_events
  * ledger, exactly like markOrderPaid -- a replayed webhook returns null.
  *
- * `refundedCents` is SET, never accumulated. Stripe reports amount_refunded
- * as the cumulative total for the charge, so two partial refunds of 1000 and
- * 1500 arrive as 1000 then 2500. Adding them yields 3500 and would wrongly
- * mark a half-refunded order as fully refunded.
+ * `refundedCents` is SET from Stripe's cumulative amount_refunded, never
+ * accumulated: two partial refunds of 1000 and 1500 arrive as 1000 then 2500,
+ * and adding them yields 3500 on a 2500 refund.
+ *
+ * But the set is monotonic, because Stripe does not guarantee event order.
+ * Delivered 2500 then 1000, a plain assignment leaves 1000 on an order the
+ * 2500 event already marked refunded -- the books disagreeing with the status,
+ * and refundOrder refusing to touch it because it is "refunded". The ledger
+ * cannot catch this: the two events have different ids and both are genuinely
+ * new. GREATEST makes late-but-stale events harmless.
+ *
+ * A refund is only meaningful against money we recorded taking, so an order
+ * that is not paid or fulfilled is refused rather than written. That matters
+ * for ordering too: if charge.refunded beats payment_intent.succeeded, writing
+ * "refunded" over "pending" would strand the stock reservation forever and
+ * make the retried succeeded event throw StrandedPaymentError until Stripe
+ * gives up. Throwing returns non-2xx, so Stripe retries this event once the
+ * order is paid.
  *
  * A partial refund leaves the status alone. There is no partially_refunded
- * state, and inventing one would mean a migration plus a new case in every
+ * state, and inventing one would cost a migration plus a new case in every
  * status filter; refundedCents already carries the fact.
  *
  * Fulfilment is not cleared. The parcel shipped, and erasing the carrier and
@@ -2390,14 +2833,28 @@ export async function recordRefund(
       throw new OrderNotFoundForPaymentError(paymentIntentId);
     }
 
-    const fullyRefunded = refundedCents >= existing.totalCents;
+    if (
+      existing.status !== "paid" &&
+      existing.status !== "fulfilled" &&
+      existing.status !== "refunded"
+    ) {
+      throw new OrderNotRefundableError(
+        existing.id,
+        `it is "${existing.status}", not paid`,
+      );
+    }
+
+    // Never below what is already recorded: a stale event carrying a smaller
+    // cumulative total must not walk the figure backwards.
+    const applied = Math.max(refundedCents, existing.refundedCents);
+    const fullyRefunded = applied >= existing.totalCents;
 
     const [order] = await tx
       .update(orders)
       .set(
         fullyRefunded
-          ? { refundedCents, status: "refunded" as const }
-          : { refundedCents },
+          ? { refundedCents: applied, status: "refunded" as const }
+          : { refundedCents: applied },
       )
       .where(eq(orders.id, existing.id))
       .returning();
@@ -2432,15 +2889,16 @@ git commit -m "feat: add refundOrder and recordRefund"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `src/app/api/stripe/webhook/route.test.ts`. This uses that file's
-existing helpers: `post(body)` posts a signed request, `placeOrder()` creates
+This uses that file's existing helpers: `post(body)` posts a signed request, `placeOrder()` creates
 a pending order, and `fake` is the `FakePayments` instance whose
 `verifyWebhook` simply parses the body — so a refund event is written as
 plain JSON.
 
+Append to `src/app/api/stripe/webhook/route.test.ts`:
+
 ```ts
 describe("charge.refunded", () => {
-  /** Places an order and drives it to paid, which is the only refundable state. */
+  /** Places an order and drives it to paid, the only refundable state. */
   async function paidOrder() {
     const order = await placeOrder();
     await post(fake.succeededEvent(order.stripePaymentIntentId!));
@@ -2451,13 +2909,16 @@ describe("charge.refunded", () => {
     return row;
   }
 
+  /**
+   * amountCents here is Stripe's amount_refunded: the CUMULATIVE total for
+   * the charge, not the amount of this one refund. That is why recordRefund
+   * sets rather than accumulates.
+   */
   function refundEvent(
     paymentIntentId: string,
     amountCents: number,
     eventId: string,
   ): string {
-    // amountCents is Stripe's amount_refunded: the cumulative total for the
-    // charge, not the amount of this one refund.
     return JSON.stringify({
       id: eventId,
       type: "charge.refunded",
@@ -2486,9 +2947,7 @@ describe("charge.refunded", () => {
   it("leaves a partially refunded order paid", async () => {
     const order = await paidOrder();
 
-    await post(
-      refundEvent(order.stripePaymentIntentId!, 1000, "evt_refund_2"),
-    );
+    await post(refundEvent(order.stripePaymentIntentId!, 1000, "evt_refund_2"));
 
     const [row] = await ctx.db
       .select()
@@ -2499,12 +2958,27 @@ describe("charge.refunded", () => {
   });
 
   it("returns non-2xx when no order matches, so Stripe retries", async () => {
-    // Money moved with no order behind it. A 200 here loses it silently.
+    // Money moved with no order behind it. A 200 here loses it silently, with
+    // nothing left to reconcile against.
     const response = await post(
       refundEvent("pi_no_such_order", 5100, "evt_refund_3"),
     );
 
     expect(response.status).toBe(500);
+  });
+
+  it("is idempotent when Stripe replays the refund", async () => {
+    const order = await paidOrder();
+    const event = refundEvent(order.stripePaymentIntentId!, 1000, "evt_refund_4");
+
+    expect((await post(event)).status).toBe(200);
+    expect((await post(event)).status).toBe(200);
+
+    const [row] = await ctx.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(1000);
   });
 });
 ```
@@ -2579,6 +3053,10 @@ import { setPayments } from "@/lib/payments";
 let ctx: Awaited<ReturnType<typeof testDb>>;
 let payments: FakePayments;
 
+// The action reaches the database through @/lib/db/client, which resolves
+// DATABASE_URL -- the dev database -- while testDb() connects to the test
+// one. Without this the fixtures and the code under test would sit in two
+// different databases and the assertions would mean nothing.
 vi.mock("@/lib/db/client", async () => {
   const { testDb } = await import("@/test/db");
   const shared = await testDb();
@@ -2609,7 +3087,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seedOrder(status: "paid" | "pending" | "fulfilled") {
@@ -2648,7 +3126,7 @@ beforeEach(async () => {
 });
 
 describe("refundAction", () => {
-  it("submits the refund and says Stripe will confirm it", async () => {
+  it("submits the refund and reports the amount", async () => {
     const order = await seedOrder("paid");
 
     const state = await refundAction({ status: "idle" }, form({ orderId: order.id }));
@@ -2677,10 +3155,23 @@ describe("refundAction", () => {
     expect(payments.refunds).toHaveLength(0);
   });
 
-  it("rejects a malformed order id", async () => {
+  it("rejects a malformed order id without asking Stripe for anything", async () => {
     const state = await refundAction({ status: "idle" }, form({ orderId: "nope" }));
 
     expect(state).toMatchObject({ status: "error" });
+    expect(payments.refunds).toHaveLength(0);
+  });
+
+  it("sends the same idempotency key for a double submit", async () => {
+    // Two clicks are two calls. The key is what stops the second becoming a
+    // second refund.
+    const order = await seedOrder("paid");
+
+    await refundAction({ status: "idle" }, form({ orderId: order.id }));
+    await refundAction({ status: "idle" }, form({ orderId: order.id }));
+
+    expect(payments.refunds).toHaveLength(1);
+    expect(payments.refunds[0].idempotencyKey).toBe(`refund:${order.id}:5100`);
   });
 });
 ```
@@ -2706,8 +3197,8 @@ export type RefundState =
  *
  * The order still reads "paid" or "fulfilled" afterwards, because the webhook
  * has not arrived yet. That is honest rather than sloppy: the refund is not
- * final until Stripe says so, and claiming otherwise here would mean two
- * different writers disagreeing about the same order.
+ * final until Stripe says so, and writing the status here would make this a
+ * second writer that could disagree with the webhook about the same order.
  */
 export async function refundAction(
   _prev: RefundState,
@@ -2775,8 +3266,9 @@ export function RefundButton({
   if (state.status === "submitted") {
     return (
       <p role="status">
-        Refund of {formatCents(state.amountCents)} submitted. Stripe will
-        confirm it shortly, and this order will then show as refunded.
+        Refund of {formatCents(state.amountCents)} submitted. Stripe confirms
+        it separately — this order will show as refunded once it does, usually
+        within a minute.
       </p>
     );
   }
@@ -2785,7 +3277,7 @@ export function RefundButton({
     <form action={action}>
       <input type="hidden" name="orderId" value={orderId} />
       {state.status === "error" && <p role="alert">{state.error}</p>}
-      <Button type="submit" variant="secondary" disabled={pending}>
+      <Button type="submit" variant="outline" disabled={pending}>
         {pending ? "Refunding" : `Refund ${formatCents(amountCents)}`}
       </Button>
     </form>
@@ -2795,8 +3287,9 @@ export function RefundButton({
 
 - [ ] **Step 6: Mount it**
 
-Append to `src/app/(admin)/admin/orders/[id]/page.tsx`, before the closing
-`</section>`:
+Place this before the closing `</section>`.
+
+Append to `src/app/(admin)/admin/orders/[id]/page.tsx`:
 
 ```tsx
       {(order.status === "paid" || order.status === "fulfilled") &&

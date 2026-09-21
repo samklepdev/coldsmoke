@@ -16,7 +16,11 @@ type FakeIntent = { amountCents: number; orderId: string; status: string };
  */
 export class FakePayments implements PaymentsAdapter {
   public intents = new Map<string, FakeIntent>();
-  public refunds: { paymentIntentId: string; amountCents: number }[] = [];
+  public refunds: {
+    paymentIntentId: string;
+    amountCents: number;
+    idempotencyKey: string;
+  }[] = [];
   private counter = 0;
 
   async calculateTax({
@@ -68,8 +72,17 @@ export class FakePayments implements PaymentsAdapter {
   async refund({
     paymentIntentId,
     amountCents,
+    idempotencyKey,
   }: Parameters<PaymentsAdapter["refund"]>[0]) {
-    this.refunds.push({ paymentIntentId, amountCents });
+    // Mirrors Stripe: a repeated key returns the original refund rather than
+    // creating a second one. Without this the fake would happily record two
+    // refunds for a double submit and the tests would not catch a real one.
+    const seen = this.refunds.findIndex(
+      (r) => r.idempotencyKey === idempotencyKey,
+    );
+    if (seen !== -1) return { refundId: `re_fake_${seen + 1}` };
+
+    this.refunds.push({ paymentIntentId, amountCents, idempotencyKey });
     return { refundId: `re_fake_${this.refunds.length}` };
   }
 

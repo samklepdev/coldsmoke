@@ -271,3 +271,88 @@ describe("payment_intent.payment_failed", () => {
     expect(ledger).toHaveLength(1);
   });
 });
+
+describe("charge.refunded", () => {
+  /** Places an order and drives it to paid, the only refundable state. */
+  async function paidOrder() {
+    const order = await placeOrder();
+    await post(fake.succeededEvent(order.stripePaymentIntentId!));
+    const [row] = await ctx.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, order.id));
+    return row;
+  }
+
+  /**
+   * amountCents here is Stripe's amount_refunded: the CUMULATIVE total for
+   * the charge, not the amount of this one refund. That is why recordRefund
+   * sets rather than accumulates.
+   */
+  function refundEvent(
+    paymentIntentId: string,
+    amountCents: number,
+    eventId: string,
+  ): string {
+    return JSON.stringify({
+      id: eventId,
+      type: "charge.refunded",
+      paymentIntentId,
+      amountCents,
+      metadata: {},
+    });
+  }
+
+  it("records a full refund and marks the order refunded", async () => {
+    const order = await paidOrder();
+
+    const response = await post(
+      refundEvent(order.stripePaymentIntentId!, order.totalCents, "evt_refund_1"),
+    );
+
+    expect(response.status).toBe(200);
+    const [row] = await ctx.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, order.id));
+    expect(row.status).toBe("refunded");
+    expect(row.refundedCents).toBe(order.totalCents);
+  });
+
+  it("leaves a partially refunded order paid", async () => {
+    const order = await paidOrder();
+
+    await post(refundEvent(order.stripePaymentIntentId!, 1000, "evt_refund_2"));
+
+    const [row] = await ctx.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, order.id));
+    expect(row.status).toBe("paid");
+    expect(row.refundedCents).toBe(1000);
+  });
+
+  it("returns non-2xx when no order matches, so Stripe retries", async () => {
+    // Money moved with no order behind it. A 200 here loses it silently, with
+    // nothing left to reconcile against.
+    const response = await post(
+      refundEvent("pi_no_such_order", 5100, "evt_refund_3"),
+    );
+
+    expect(response.status).toBe(500);
+  });
+
+  it("is idempotent when Stripe replays the refund", async () => {
+    const order = await paidOrder();
+    const event = refundEvent(order.stripePaymentIntentId!, 1000, "evt_refund_4");
+
+    expect((await post(event)).status).toBe(200);
+    expect((await post(event)).status).toBe(200);
+
+    const [row] = await ctx.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(1000);
+  });
+});
