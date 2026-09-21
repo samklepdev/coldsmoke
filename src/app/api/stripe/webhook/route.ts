@@ -4,6 +4,7 @@ import { db } from "@/lib/db/client";
 import { orders, stripeEvents } from "@/lib/db/schema";
 import { getPayments } from "@/lib/payments";
 import { markOrderPaid, findOrderById } from "@/lib/orders";
+import { recordRefund } from "@/lib/orders/refund";
 import { sendOrderConfirmation } from "@/lib/email";
 import { clearCart } from "@/lib/cart";
 
@@ -39,6 +40,18 @@ export async function POST(request: Request) {
       case "payment_intent.payment_failed": {
         if (!event.paymentIntentId) break;
         await handleFailure(event.id, event.paymentIntentId);
+        break;
+      }
+
+      case "charge.refunded": {
+        if (!event.paymentIntentId || event.amountCents === null) break;
+
+        // amountCents is amount_refunded -- the cumulative total for the
+        // charge, which is why recordRefund sets rather than accumulates.
+        // Letting this throw is deliberate: it produces a non-2xx, rolls back
+        // the ledger row, and has Stripe retry. Money that moved with no
+        // order behind it must never be answered with a 200.
+        await recordRefund(event.paymentIntentId, event.id, event.amountCents);
         break;
       }
 
