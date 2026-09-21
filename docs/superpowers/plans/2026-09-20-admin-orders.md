@@ -1463,6 +1463,7 @@ import { notFound } from "next/navigation";
 import { findOrderById } from "@/lib/orders";
 import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
+import { FulfillForm } from "./FulfillForm";
 import styles from "./detail.module.css";
 
 // Matches the list page's `.toISOString().slice(0, 10)` date — a plain date
@@ -1581,6 +1582,15 @@ export default async function AdminOrderDetailPage({
         <br />
         {address.city}, {address.state} {address.postalCode}
       </address>
+
+      {/* Only a paid order can ship. fulfillOrder enforces this too; the
+          condition here just avoids offering an action that would be refused. */}
+      {order.status === "paid" ? (
+        <>
+          <h2 className={styles.subheading}>Fulfil</h2>
+          <FulfillForm orderId={order.id} />
+        </>
+      ) : null}
     </section>
   );
 }
@@ -1688,6 +1698,11 @@ import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
+
+// The action reaches the database through @/lib/db/client, which resolves
+// DATABASE_URL -- the dev database -- while testDb() connects to the test one.
+// Without this the fixtures below and the code under test would sit in two
+// different databases and the assertions would mean nothing.
 vi.mock("@/lib/db/client", async () => {
   const { testDb } = await import("@/test/db");
   const shared = await testDb();
@@ -1783,8 +1798,9 @@ describe("fulfillAction", () => {
   });
 
   it("keeps the fulfilment when the email fails", async () => {
-    // The parcel shipped. Losing that because Resend was down would be far
-    // worse than an unsent email, and the admin can resend.
+    // The parcel shipped. Losing that record because Resend was down would be
+    // far worse than an unsent email, and the admin can resend. This is the
+    // whole reason the send happens after the transaction commits.
     const order = await seedOrder("paid");
     sendShippingConfirmation.mockResolvedValueOnce({ delivered: false });
 
@@ -1795,7 +1811,9 @@ describe("fulfillAction", () => {
 
     const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
     expect(row.status).toBe("fulfilled");
+    expect(row.carrier).toBe("USPS");
     expect(row.trackingNumber).toBe("TRACK1");
+    expect(row.fulfilledAt).toBeInstanceOf(Date);
   });
 
   it("refuses an order that is not paid, and sends no email", async () => {
@@ -1816,6 +1834,16 @@ describe("fulfillAction", () => {
     const state = await fulfillAction(
       { status: "idle" },
       form({ orderId: order.id, carrier: "", trackingNumber: "" }),
+    );
+
+    expect(state).toMatchObject({ status: "error" });
+    expect(sendShippingConfirmation).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed order id without touching the database", async () => {
+    const state = await fulfillAction(
+      { status: "idle" },
+      form({ orderId: "not-a-uuid", carrier: "USPS", trackingNumber: "TRACK1" }),
     );
 
     expect(state).toMatchObject({ status: "error" });
@@ -1861,8 +1889,10 @@ export type FulfillState =
   | { status: "error"; error: string };
 
 /**
+ * Marks an order shipped, then tries to tell the customer.
+ *
  * The layout already gates /admin, but a Server Action is its own entry
- * point: it is reachable by POST without rendering the layout at all. So the
+ * point: it is reachable by POST without the layout ever rendering. So the
  * check is repeated here rather than inherited.
  */
 export async function fulfillAction(
@@ -1899,9 +1929,9 @@ export async function fulfillAction(
   revalidatePath(`/admin/orders/${parsed.data.orderId}`);
 
   /**
-   * The order is already fulfilled at this point, and nothing below may undo
-   * that. The parcel shipped whether or not Resend accepted the message, so
-   * a failed send is reported to the admin -- who can resend -- rather than
+   * The order is already fulfilled by this point, and nothing below may undo
+   * it. The parcel shipped whether or not Resend accepted the message, so a
+   * rejected send is reported to the admin -- who can resend -- rather than
    * rolled back or swallowed.
    */
   const order = await findOrderById(parsed.data.orderId);
@@ -1982,8 +2012,11 @@ export function FulfillForm({ orderId }: { orderId: string }) {
 }
 
 /**
- * Shown when the parcel shipped but the email did not. The fulfilment is not
- * in question here -- only whether the customer was told.
+ * Shown when the parcel shipped but the email did not.
+ *
+ * The fulfilment is not in question here -- it is already committed. Only
+ * whether the customer was told, which is why the only action offered is to
+ * send it again rather than anything that would revisit the shipment.
  */
 function ResendPrompt({ orderId }: { orderId: string }) {
   const [state, action, pending] = useActionState<FulfillState, FormData>(

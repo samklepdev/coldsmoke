@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { findOrderById } from "@/lib/orders";
 import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
+import { FulfillForm } from "./FulfillForm";
 import styles from "./detail.module.css";
 
 // Matches the list page's `.toISOString().slice(0, 10)` date — a plain date
@@ -120,6 +121,15 @@ export default async function AdminOrderDetailPage({
         <br />
         {address.city}, {address.state} {address.postalCode}
       </address>
+
+      {/* Only a paid order can ship. fulfillOrder enforces this too; the
+          condition here just avoids offering an action that would be refused. */}
+      {order.status === "paid" ? (
+        <>
+          <h2 className={styles.subheading}>Fulfil</h2>
+          <FulfillForm orderId={order.id} />
+        </>
+      ) : null}
     </section>
   );
 }
