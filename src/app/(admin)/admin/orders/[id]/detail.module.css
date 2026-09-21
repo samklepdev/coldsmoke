@@ -40,7 +40,9 @@
   font-size: 14px;
 }
 
+.table th,
 .table td {
+  text-align: left;
   padding: 6px 0;
   border-bottom: 1px solid var(--line);
 }

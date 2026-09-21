@@ -4,6 +4,18 @@ import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
 import styles from "./detail.module.css";
 
+// Matches the list page's `.toISOString().slice(0, 10)` date — a plain date
+// is what an admin scanning order history needs; millisecond precision is noise.
+function formatDate(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+// Shipped is the one timestamp where the time-of-day is genuinely useful
+// (e.g. confirming same-day dispatch), so keep it to the minute.
+function formatDateTime(date: Date) {
+  return date.toISOString().slice(0, 16).replace("T", " ");
+}
+
 export default async function AdminOrderDetailPage({
   params,
 }: PageProps<"/admin/orders/[id]">) {
@@ -26,18 +38,18 @@ export default async function AdminOrderDetailPage({
         <dt>Customer</dt>
         <dd>{order.email}</dd>
         <dt>Placed</dt>
-        <dd>{order.createdAt.toISOString()}</dd>
+        <dd>{formatDate(order.createdAt)}</dd>
         {order.paidAt ? (
           <>
             <dt>Paid</dt>
-            <dd>{order.paidAt.toISOString()}</dd>
+            <dd>{formatDate(order.paidAt)}</dd>
           </>
         ) : null}
         {order.fulfilledAt ? (
           <>
             <dt>Shipped</dt>
             <dd>
-              {order.fulfilledAt.toISOString()} · {order.carrier} ·{" "}
+              {formatDateTime(order.fulfilledAt)} · {order.carrier} ·{" "}
               {order.trackingNumber}
             </dd>
           </>
@@ -52,6 +64,12 @@ export default async function AdminOrderDetailPage({
 
       <h2 className={styles.subheading}>Items</h2>
       <table className={styles.table}>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th className={styles.right}>Amount</th>
+          </tr>
+        </thead>
         <tbody>
           {order.items.map((item) => (
             <tr key={item.id}>
