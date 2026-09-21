@@ -1,5 +1,5 @@
 import { headers } from "next/headers";
-import { redirect } from "next/navigation";
+import { redirect, notFound } from "next/navigation";
 import { auth } from "./index";
 
 export type SessionUser = {
@@ -43,6 +43,31 @@ export async function requireSessionUser(next?: string): Promise<SessionUser> {
   if (!user) {
     const target = next ? `/sign-in?next=${encodeURIComponent(next)}` : "/sign-in";
     redirect(target);
+  }
+  return user;
+}
+
+/**
+ * The signed-in admin, or no return at all.
+ *
+ * A non-admin gets `notFound()`, not a redirect or a 403. A redirect would
+ * confirm that /admin is a real route; the 404 makes it indistinguishable
+ * from a path that was never registered. That matches how the sign-up and
+ * resend-verification forms already refuse to confirm anything about an
+ * address.
+ *
+ * Signed out is different from signed in without the role: the first is a
+ * missing credential and is worth sending to sign-in, the second is a
+ * credential that will never be enough.
+ */
+export async function requireAdminUser(next?: string): Promise<SessionUser> {
+  const user = await getSessionUser();
+  if (!user) {
+    const target = next ? `/sign-in?next=${encodeURIComponent(next)}` : "/sign-in";
+    redirect(target);
+  }
+  if (user.role !== "admin") {
+    notFound();
   }
   return user;
 }
