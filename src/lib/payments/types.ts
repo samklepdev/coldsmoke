@@ -57,6 +57,12 @@ export interface PaymentsAdapter {
   refund(args: {
     paymentIntentId: string;
     amountCents: number;
+    /**
+     * Stable per logical refund. Two submits of the same refund send the same
+     * key, so Stripe returns the original refund instead of issuing a second
+     * one or rejecting the amount as exceeding what is left.
+     */
+    idempotencyKey: string;
   }): Promise<{ refundId: string }>;
 
   verifyWebhook(rawBody: string, signature: string): WebhookEvent;
