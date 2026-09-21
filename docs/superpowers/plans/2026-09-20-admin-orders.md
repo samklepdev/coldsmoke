@@ -1168,6 +1168,30 @@ describe("listOrdersForAdmin", () => {
 
     expect(rows).toHaveLength(1);
   });
+
+  it("returns zero results for a digit query beyond int4 range, without throwing", async () => {
+    // order_number is a Postgres integer (int4, max 2147483647). Unlike an
+    // unrecognised status, an out-of-range number is not "no filter" -- no
+    // order can ever have it, so the honest answer is zero rows.
+    await seed("a@example.com", "paid");
+
+    const result = await listOrdersForAdmin({ query: "99999999999" });
+
+    expect(result.rows).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+
+  it("still finds an order by number when the query is in range", async () => {
+    const seeded = await seed("buyer@example.com", "paid");
+    await seed("other@example.com", "paid");
+
+    const result = await listOrdersForAdmin({
+      query: String(seeded.orderNumber),
+    });
+
+    expect(result.rows.map((r) => r.id)).toEqual([seeded.id]);
+    expect(result.total).toBe(1);
+  });
 });
 ```
 
@@ -1186,6 +1210,10 @@ import { db } from "@/lib/db/client";
 import { orders, orderStatus, type Order } from "@/lib/db/schema";
 
 export const ADMIN_PAGE_SIZE = 50;
+
+// order_number is a Postgres integer (int4); Postgres throws rather than
+// truncating when a query value exceeds its range.
+const INT4_MAX = 2147483647;
 
 type OrderStatus = (typeof orderStatus.enumValues)[number];
 
@@ -1207,7 +1235,9 @@ function asStatus(value: string | undefined): OrderStatus | null {
  *
  * Both filters arrive from the URL and are therefore untrusted. An
  * unrecognised status means no filter rather than an error: a stale or
- * hand-edited link should show orders, not a crash.
+ * hand-edited link should show orders, not a crash. A numeric query is
+ * different: it names one specific order, so a value no order_number could
+ * ever hold (out of int4 range) must answer with zero rows, not every row.
  */
 export async function listOrdersForAdmin(args: {
   query?: string;
@@ -1226,6 +1256,9 @@ export async function listOrdersForAdmin(args: {
 
   if (query) {
     if (/^\d+$/.test(query)) {
+      if (Number(query) > INT4_MAX) {
+        return { rows: [], total: 0, page, pageSize: ADMIN_PAGE_SIZE };
+      }
       filters.push(eq(orders.orderNumber, Number(query)));
     } else {
       filters.push(sql`${orders.email} ILIKE ${`${query}%`}`);
@@ -1259,7 +1292,7 @@ export async function listOrdersForAdmin(args: {
 - [ ] **Step 4: Run the test**
 
 Run: `npx vitest run src/lib/orders/adminList.test.ts`
-Expected: PASS, 7 tests.
+Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Build the page**
 

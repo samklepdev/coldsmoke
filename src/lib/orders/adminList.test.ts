@@ -119,4 +119,28 @@ describe("listOrdersForAdmin", () => {
 
     expect(rows).toHaveLength(1);
   });
+
+  it("returns zero results for a digit query beyond int4 range, without throwing", async () => {
+    // order_number is a Postgres integer (int4, max 2147483647). Unlike an
+    // unrecognised status, an out-of-range number is not "no filter" -- no
+    // order can ever have it, so the honest answer is zero rows.
+    await seed("a@example.com", "paid");
+
+    const result = await listOrdersForAdmin({ query: "99999999999" });
+
+    expect(result.rows).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+
+  it("still finds an order by number when the query is in range", async () => {
+    const seeded = await seed("buyer@example.com", "paid");
+    await seed("other@example.com", "paid");
+
+    const result = await listOrdersForAdmin({
+      query: String(seeded.orderNumber),
+    });
+
+    expect(result.rows.map((r) => r.id)).toEqual([seeded.id]);
+    expect(result.total).toBe(1);
+  });
 });

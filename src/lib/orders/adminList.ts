@@ -4,6 +4,10 @@ import { orders, orderStatus, type Order } from "@/lib/db/schema";
 
 export const ADMIN_PAGE_SIZE = 50;
 
+// order_number is a Postgres integer (int4); Postgres throws rather than
+// truncating when a query value exceeds its range.
+const INT4_MAX = 2147483647;
+
 type OrderStatus = (typeof orderStatus.enumValues)[number];
 
 function asStatus(value: string | undefined): OrderStatus | null {
@@ -24,7 +28,9 @@ function asStatus(value: string | undefined): OrderStatus | null {
  *
  * Both filters arrive from the URL and are therefore untrusted. An
  * unrecognised status means no filter rather than an error: a stale or
- * hand-edited link should show orders, not a crash.
+ * hand-edited link should show orders, not a crash. A numeric query is
+ * different: it names one specific order, so a value no order_number could
+ * ever hold (out of int4 range) must answer with zero rows, not every row.
  */
 export async function listOrdersForAdmin(args: {
   query?: string;
@@ -43,6 +49,9 @@ export async function listOrdersForAdmin(args: {
 
   if (query) {
     if (/^\d+$/.test(query)) {
+      if (Number(query) > INT4_MAX) {
+        return { rows: [], total: 0, page, pageSize: ADMIN_PAGE_SIZE };
+      }
       filters.push(eq(orders.orderNumber, Number(query)));
     } else {
       filters.push(sql`${orders.email} ILIKE ${`${query}%`}`);
