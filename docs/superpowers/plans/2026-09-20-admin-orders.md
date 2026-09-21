@@ -1464,6 +1464,7 @@ import { findOrderById } from "@/lib/orders";
 import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
 import { FulfillForm } from "./FulfillForm";
+import { RefundButton } from "./RefundButton";
 import styles from "./detail.module.css";
 
 // Matches the list page's `.toISOString().slice(0, 10)` date — a plain date
@@ -1589,6 +1590,19 @@ export default async function AdminOrderDetailPage({
         <>
           <h2 className={styles.subheading}>Fulfil</h2>
           <FulfillForm orderId={order.id} />
+        </>
+      ) : null}
+
+      {/* A refunded or unpaid order has nothing left to give back. refundOrder
+          enforces this too; the condition just avoids offering a refused action. */}
+      {(order.status === "paid" || order.status === "fulfilled") &&
+      order.totalCents > order.refundedCents ? (
+        <>
+          <h2 className={styles.subheading}>Refund</h2>
+          <RefundButton
+            orderId={order.id}
+            amountCents={order.totalCents - order.refundedCents}
+          />
         </>
       ) : null}
     </section>
@@ -1869,10 +1883,12 @@ import { revalidatePath } from "next/cache";
 import { requireAdminUser } from "@/lib/auth/session";
 import { findOrderById } from "@/lib/orders";
 import { fulfillOrder } from "@/lib/orders/fulfill";
+import { refundOrder } from "@/lib/orders/refund";
 import { sendShippingConfirmation } from "@/lib/email/shipping";
 import {
   OrderNotFoundError,
   OrderNotFulfillableError,
+  OrderNotRefundableError,
 } from "@/lib/orders/errors";
 
 const schema = z.object({
@@ -1960,6 +1976,46 @@ export async function resendShippingAction(
   const { delivered } = await sendShippingConfirmation(order);
 
   return { status: delivered ? "fulfilled" : "fulfilled-undelivered" };
+}
+
+export type RefundState =
+  | { status: "idle" }
+  /** Sent to Stripe. The order does not change until charge.refunded lands. */
+  | { status: "submitted"; amountCents: number }
+  | { status: "error"; error: string };
+
+/**
+ * Sends the refund and reports only that it was sent.
+ *
+ * The order still reads "paid" or "fulfilled" afterwards, because the webhook
+ * has not arrived yet. That is honest rather than sloppy: the refund is not
+ * final until Stripe says so, and writing the status here would make this a
+ * second writer that could disagree with the webhook about the same order.
+ */
+export async function refundAction(
+  _prev: RefundState,
+  formData: FormData,
+): Promise<RefundState> {
+  await requireAdminUser();
+
+  const orderId = z.uuid().safeParse(formData.get("orderId"));
+  if (!orderId.success) {
+    return { status: "error", error: "Unknown order." };
+  }
+
+  try {
+    const { amountCents } = await refundOrder({ orderId: orderId.data });
+    revalidatePath(`/admin/orders/${orderId.data}`);
+    return { status: "submitted", amountCents };
+  } catch (error) {
+    if (
+      error instanceof OrderNotRefundableError ||
+      error instanceof OrderNotFoundError
+    ) {
+      return { status: "error", error: error.message };
+    }
+    throw error;
+  }
 }
 ```
 
@@ -2732,6 +2788,10 @@ import { setPayments } from "@/lib/payments";
 let ctx: Awaited<ReturnType<typeof testDb>>;
 let payments: FakePayments;
 
+// The action reaches the database through @/lib/db/client, which resolves
+// DATABASE_URL -- the dev database -- while testDb() connects to the test
+// one. Without this the fixtures and the code under test would sit in two
+// different databases and the assertions would mean nothing.
 vi.mock("@/lib/db/client", async () => {
   const { testDb } = await import("@/test/db");
   const shared = await testDb();
@@ -2801,7 +2861,7 @@ beforeEach(async () => {
 });
 
 describe("refundAction", () => {
-  it("submits the refund and says Stripe will confirm it", async () => {
+  it("submits the refund and reports the amount", async () => {
     const order = await seedOrder("paid");
 
     const state = await refundAction({ status: "idle" }, form({ orderId: order.id }));
@@ -2830,10 +2890,23 @@ describe("refundAction", () => {
     expect(payments.refunds).toHaveLength(0);
   });
 
-  it("rejects a malformed order id", async () => {
+  it("rejects a malformed order id without asking Stripe for anything", async () => {
     const state = await refundAction({ status: "idle" }, form({ orderId: "nope" }));
 
     expect(state).toMatchObject({ status: "error" });
+    expect(payments.refunds).toHaveLength(0);
+  });
+
+  it("sends the same idempotency key for a double submit", async () => {
+    // Two clicks are two calls. The key is what stops the second becoming a
+    // second refund.
+    const order = await seedOrder("paid");
+
+    await refundAction({ status: "idle" }, form({ orderId: order.id }));
+    await refundAction({ status: "idle" }, form({ orderId: order.id }));
+
+    expect(payments.refunds).toHaveLength(1);
+    expect(payments.refunds[0].idempotencyKey).toBe(`refund:${order.id}:5100`);
   });
 });
 ```
@@ -2928,8 +3001,9 @@ export function RefundButton({
   if (state.status === "submitted") {
     return (
       <p role="status">
-        Refund of {formatCents(state.amountCents)} submitted. Stripe will
-        confirm it shortly, and this order will then show as refunded.
+        Refund of {formatCents(state.amountCents)} submitted. Stripe confirms
+        it separately — this order will show as refunded once it does, usually
+        within a minute.
       </p>
     );
   }

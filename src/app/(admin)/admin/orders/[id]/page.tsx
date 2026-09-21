@@ -3,6 +3,7 @@ import { findOrderById } from "@/lib/orders";
 import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
 import { FulfillForm } from "./FulfillForm";
+import { RefundButton } from "./RefundButton";
 import styles from "./detail.module.css";
 
 // Matches the list page's `.toISOString().slice(0, 10)` date — a plain date
@@ -128,6 +129,19 @@ export default async function AdminOrderDetailPage({
         <>
           <h2 className={styles.subheading}>Fulfil</h2>
           <FulfillForm orderId={order.id} />
+        </>
+      ) : null}
+
+      {/* A refunded or unpaid order has nothing left to give back. refundOrder
+          enforces this too; the condition just avoids offering a refused action. */}
+      {(order.status === "paid" || order.status === "fulfilled") &&
+      order.totalCents > order.refundedCents ? (
+        <>
+          <h2 className={styles.subheading}>Refund</h2>
+          <RefundButton
+            orderId={order.id}
+            amountCents={order.totalCents - order.refundedCents}
+          />
         </>
       ) : null}
     </section>

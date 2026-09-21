@@ -5,10 +5,12 @@ import { revalidatePath } from "next/cache";
 import { requireAdminUser } from "@/lib/auth/session";
 import { findOrderById } from "@/lib/orders";
 import { fulfillOrder } from "@/lib/orders/fulfill";
+import { refundOrder } from "@/lib/orders/refund";
 import { sendShippingConfirmation } from "@/lib/email/shipping";
 import {
   OrderNotFoundError,
   OrderNotFulfillableError,
+  OrderNotRefundableError,
 } from "@/lib/orders/errors";
 
 const schema = z.object({
@@ -96,4 +98,44 @@ export async function resendShippingAction(
   const { delivered } = await sendShippingConfirmation(order);
 
   return { status: delivered ? "fulfilled" : "fulfilled-undelivered" };
+}
+
+export type RefundState =
+  | { status: "idle" }
+  /** Sent to Stripe. The order does not change until charge.refunded lands. */
+  | { status: "submitted"; amountCents: number }
+  | { status: "error"; error: string };
+
+/**
+ * Sends the refund and reports only that it was sent.
+ *
+ * The order still reads "paid" or "fulfilled" afterwards, because the webhook
+ * has not arrived yet. That is honest rather than sloppy: the refund is not
+ * final until Stripe says so, and writing the status here would make this a
+ * second writer that could disagree with the webhook about the same order.
+ */
+export async function refundAction(
+  _prev: RefundState,
+  formData: FormData,
+): Promise<RefundState> {
+  await requireAdminUser();
+
+  const orderId = z.uuid().safeParse(formData.get("orderId"));
+  if (!orderId.success) {
+    return { status: "error", error: "Unknown order." };
+  }
+
+  try {
+    const { amountCents } = await refundOrder({ orderId: orderId.data });
+    revalidatePath(`/admin/orders/${orderId.data}`);
+    return { status: "submitted", amountCents };
+  } catch (error) {
+    if (
+      error instanceof OrderNotRefundableError ||
+      error instanceof OrderNotFoundError
+    ) {
+      return { status: "error", error: error.message };
+    }
+    throw error;
+  }
 }
