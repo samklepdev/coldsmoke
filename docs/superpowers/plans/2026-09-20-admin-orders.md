@@ -418,7 +418,7 @@ Create `src/app/(admin)/admin/admin.module.css`:
 }
 
 .wordmark {
-  color: var(--bright);
+  color: var(--text-bright);
   font-size: 14px;
   letter-spacing: 4px;
   font-weight: 300;
@@ -432,7 +432,7 @@ Create `src/app/(admin)/admin/admin.module.css`:
 
 .who {
   margin-left: auto;
-  color: var(--muted);
+  color: var(--text-dim);
   font-size: 13px;
 }
 
@@ -441,8 +441,8 @@ Create `src/app/(admin)/admin/admin.module.css`:
 }
 ```
 
-Check the token names against `src/app/globals.css` before committing; use the
-variables that file actually defines rather than these if they differ.
+These four tokens are verified to exist in `src/styles/tokens.css`, which is
+where this project defines them — not `globals.css`. Use them as written.
 
 - [ ] **Step 6: Run the e2e test**
 
@@ -1347,7 +1347,7 @@ Create `src/app/(admin)/admin/orders/orders.module.css`:
 
 .count {
   margin-top: 16px;
-  color: var(--muted);
+  color: var(--text-dim);
   font-size: 13px;
 }
 ```
@@ -1509,7 +1509,7 @@ Create `src/app/(admin)/admin/orders/[id]/detail.module.css`:
 }
 
 .status {
-  color: var(--muted);
+  color: var(--text-dim);
   font-size: 12px;
   letter-spacing: 2px;
   text-transform: uppercase;
@@ -1519,7 +1519,7 @@ Create `src/app/(admin)/admin/orders/[id]/detail.module.css`:
   font-size: 12px;
   letter-spacing: 2px;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text-dim);
   margin: 24px 0 8px;
 }
 
@@ -1531,7 +1531,7 @@ Create `src/app/(admin)/admin/orders/[id]/detail.module.css`:
 }
 
 .facts dt {
-  color: var(--muted);
+  color: var(--text-dim);
 }
 
 .table {
@@ -1907,7 +1907,7 @@ function ResendPrompt({ orderId }: { orderId: string }) {
         Marked as shipped, but the shipping email was rejected. The order is
         correct — only the notification failed.
       </p>
-      <Button type="submit" variant="secondary" disabled={pending}>
+      <Button type="submit" variant="outline" disabled={pending}>
         {pending ? "Sending" : "Resend shipping email"}
       </Button>
     </form>
@@ -1915,8 +1915,9 @@ function ResendPrompt({ orderId }: { orderId: string }) {
 }
 ```
 
-Check `src/components/ui/Button.tsx` for the variant names it accepts and use
-one that exists.
+`Button` accepts `variant="primary" | "outline" | "quiet"` — verified. There
+is no `"secondary"`. `Field` takes `label` and an optional `error`, plus the
+usual input attributes.
 
 - [ ] **Step 6: Mount it on the detail page**
 
@@ -2785,7 +2786,7 @@ export function RefundButton({
     <form action={action}>
       <input type="hidden" name="orderId" value={orderId} />
       {state.status === "error" && <p role="alert">{state.error}</p>}
-      <Button type="submit" variant="secondary" disabled={pending}>
+      <Button type="submit" variant="outline" disabled={pending}>
         {pending ? "Refunding" : `Refund ${formatCents(amountCents)}`}
       </Button>
     </form>
