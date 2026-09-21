@@ -571,14 +571,26 @@ fixtures against `testDb()`.
 Create `src/lib/orders/fulfill.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
-import { fulfillOrder } from "./fulfill";
 import { OrderNotFoundError, OrderNotFulfillableError } from "./errors";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
+
+// fulfill.ts reads `db` from @/lib/db/client, which points at DATABASE_URL
+// (the dev database) rather than TEST_DATABASE_URL. Without this mock the
+// fixtures below and fulfillOrder's own reads would land in two different
+// databases. Same pattern as claim.test.ts and access.test.ts, the other
+// files that import their module directly rather than through index.ts.
+vi.mock("@/lib/db/client", async () => {
+  const { testDb } = await import("@/test/db");
+  const shared = await testDb();
+  return { db: shared.db };
+});
+
+const { fulfillOrder } = await import("./fulfill");
 
 beforeAll(async () => {
   ctx = await testDb();
@@ -598,7 +610,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seedOrder(status: "pending" | "paid" | "fulfilled" | "refunded") {
@@ -1035,12 +1047,23 @@ git commit -m "feat: add the shipping confirmation email"
 Create `src/lib/orders/adminList.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
-import { listOrdersForAdmin } from "./adminList";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
+
+// adminList.ts reads `db` from @/lib/db/client, which points at DATABASE_URL
+// (the dev database) rather than TEST_DATABASE_URL. Without this mock the
+// fixtures below and the query under test would land in two different
+// databases. Same pattern as claim.test.ts and access.test.ts.
+vi.mock("@/lib/db/client", async () => {
+  const { testDb } = await import("@/test/db");
+  const shared = await testDb();
+  return { db: shared.db };
+});
+
+const { listOrdersForAdmin } = await import("./adminList");
 
 beforeAll(async () => {
   ctx = await testDb();
@@ -1060,7 +1083,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seed(email: string, status: "paid" | "pending" | "fulfilled") {
@@ -1643,7 +1666,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seedOrder(status: "paid" | "pending") {
@@ -2130,17 +2153,28 @@ git commit -m "feat: give refunds an idempotency key"
 Create `src/lib/orders/refund.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
 import { FakePayments } from "@/lib/payments/fake";
 import { setPayments } from "@/lib/payments";
-import { refundOrder, recordRefund } from "./refund";
 import { OrderNotRefundableError } from "./errors";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
 let payments: FakePayments;
+
+// refund.ts reads `db` from @/lib/db/client, which points at DATABASE_URL
+// (the dev database) rather than TEST_DATABASE_URL. Without this mock the
+// fixtures below and the functions under test would land in two different
+// databases. Same pattern as claim.test.ts and access.test.ts.
+vi.mock("@/lib/db/client", async () => {
+  const { testDb } = await import("@/test/db");
+  const shared = await testDb();
+  return { db: shared.db };
+});
+
+const { refundOrder, recordRefund } = await import("./refund");
 
 beforeAll(async () => {
   ctx = await testDb();
@@ -2162,7 +2196,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seedOrder(
@@ -2629,7 +2663,7 @@ const ADDRESS = {
   city: "Bozeman",
   state: "MT",
   postalCode: "59715",
-  country: "US",
+  country: "US" as const,
 };
 
 async function seedOrder(status: "paid" | "pending" | "fulfilled") {
