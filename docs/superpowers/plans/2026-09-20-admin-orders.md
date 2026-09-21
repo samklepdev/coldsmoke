@@ -400,6 +400,21 @@ export default function AdminIndexPage() {
 }
 ```
 
+- [ ] **Step 4b: Add a placeholder page at `/admin/orders`**
+
+The e2e test navigates to `/admin/orders`, which Task 7 builds. Until it
+exists Next has nothing to match under that path and serves the global 404
+without ever rendering `AdminLayout` — so `requireAdminUser`'s redirect and
+`notFound()` never run, and the boundary this task exists to build goes
+untested.
+
+Write a minimal placeholder at `src/app/(admin)/admin/orders/page.tsx`
+returning a single paragraph, with a comment saying Task 7 replaces it.
+
+Deliberately described rather than given as a `Create` block: Task 7
+overwrites this file, and a code block here would make the plan-drift guard
+compare the placeholder against the finished orders list and fail.
+
 - [ ] **Step 5: Create the stylesheet**
 
 Create `src/app/(admin)/admin/admin.module.css`:
