@@ -189,6 +189,7 @@ There is no unit test here: the script's whole behaviour is process-level
 Create `src/lib/db/promote-admin.ts`:
 
 ```ts
+import "dotenv/config";
 import { eq, sql } from "drizzle-orm";
 import { db } from "./client";
 import { user } from "./schema";
