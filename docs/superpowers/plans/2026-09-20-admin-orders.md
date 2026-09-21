@@ -2262,20 +2262,6 @@ vi.mock("@/lib/db/client", async () => {
 
 const { refundOrder, recordRefund } = await import("./refund");
 
-beforeAll(async () => {
-  ctx = await testDb();
-});
-
-afterAll(async () => {
-  await ctx.close();
-});
-
-beforeEach(async () => {
-  await ctx.truncate();
-  payments = new FakePayments();
-  setPayments(payments);
-});
-
 const ADDRESS = {
   name: "Test Buyer",
   line1: "1 Powder Lane",
@@ -2304,6 +2290,20 @@ async function seedOrder(
   return order;
 }
 
+beforeAll(async () => {
+  ctx = await testDb();
+});
+
+afterAll(async () => {
+  await ctx.close();
+});
+
+beforeEach(async () => {
+  await ctx.truncate();
+  payments = new FakePayments();
+  setPayments(payments);
+});
+
 describe("refundOrder", () => {
   it("refunds the whole remaining amount", async () => {
     const order = await seedOrder("paid");
@@ -2311,7 +2311,7 @@ describe("refundOrder", () => {
     const result = await refundOrder({ orderId: order.id });
 
     expect(result.amountCents).toBe(5100);
-    expect(payments.refunds[0]).toMatchObject({
+    expect(payments.refunds[0]).toEqual({
       paymentIntentId: "pi_test_1",
       amountCents: 5100,
       idempotencyKey: `refund:${order.id}:5100`,
@@ -2328,8 +2328,8 @@ describe("refundOrder", () => {
 
   it("writes no status of its own", async () => {
     // The webhook is the only writer of refund state. If this action wrote
-    // too, a refund issued from the Stripe dashboard would behave
-    // differently from one issued here.
+    // too, a refund issued from the Stripe dashboard would behave differently
+    // from one issued here, and the two writers could disagree.
     const order = await seedOrder("paid");
 
     await refundOrder({ orderId: order.id });
@@ -2345,7 +2345,7 @@ describe("refundOrder", () => {
     await expect(refundOrder({ orderId: order.id })).resolves.toBeDefined();
   });
 
-  it("refuses an unpaid order", async () => {
+  it("refuses an unpaid order and asks Stripe for nothing", async () => {
     const order = await seedOrder("pending");
 
     await expect(refundOrder({ orderId: order.id })).rejects.toThrow(
@@ -2360,15 +2360,16 @@ describe("refundOrder", () => {
     await expect(refundOrder({ orderId: order.id })).rejects.toThrow(
       OrderNotRefundableError,
     );
+    expect(payments.refunds).toHaveLength(0);
   });
 });
 
 describe("recordRefund", () => {
   it("sets the cumulative amount and does not accumulate it", async () => {
-    // Stripe reports amount_refunded as the running total for the charge, not
+    // Stripe reports amount_refunded as the RUNNING TOTAL for the charge, not
     // the delta of one refund. Two partials of 1000 then 1500 arrive as 1000
-    // then 2500. Adding them would give 3500 and wrongly mark the order
-    // fully refunded. DO NOT "simplify" this to +=.
+    // then 2500. Adding them would give 3500 and wrongly mark the order fully
+    // refunded. DO NOT "simplify" this to +=.
     const order = await seedOrder("paid");
 
     await recordRefund("pi_test_1", "evt_1", 1000);
@@ -2399,7 +2400,8 @@ describe("recordRefund", () => {
   });
 
   it("keeps the shipping record on a refunded order", async () => {
-    // The parcel really did ship. Erasing that would destroy the record of it.
+    // The parcel really did ship. Erasing the carrier and tracking number
+    // would destroy the record of it.
     const order = await seedOrder("fulfilled");
     await ctx.db
       .update(orders)
@@ -2410,6 +2412,7 @@ describe("recordRefund", () => {
 
     const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
     expect(row.status).toBe("refunded");
+    expect(row.carrier).toBe("USPS");
     expect(row.trackingNumber).toBe("TRACK1");
   });
 
@@ -2418,6 +2421,16 @@ describe("recordRefund", () => {
     await recordRefund("pi_test_1", "evt_1", 5100);
 
     expect(await recordRefund("pi_test_1", "evt_1", 5100)).toBeNull();
+  });
+
+  it("does not double-apply a replayed event", async () => {
+    const order = await seedOrder("paid");
+    await recordRefund("pi_test_1", "evt_1", 1000);
+
+    await recordRefund("pi_test_1", "evt_1", 1000);
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(1000);
   });
 
   it("throws when no order matches the payment intent", async () => {
@@ -2448,10 +2461,10 @@ import { OrderNotFoundError, OrderNotRefundableError } from "./errors";
 /**
  * Asks Stripe for a refund. Writes nothing.
  *
- * The split is deliberate: this moves money, and recordRefund below moves
- * status. One writer means a refund issued from the Stripe dashboard lands
- * exactly like one issued from admin -- both arrive as charge.refunded and
- * take the same path.
+ * The split from recordRefund below is deliberate: this moves money, that
+ * moves status. One writer means a refund issued from the Stripe dashboard
+ * lands exactly like one issued from admin -- both arrive as charge.refunded
+ * and take the same path -- and the two can never disagree about an order.
  *
  * The idempotency key is stable for the same logical refund, so a double
  * submit returns the original refund rather than issuing a second one or
@@ -2500,7 +2513,7 @@ export async function refundOrder(args: {
  * mark a half-refunded order as fully refunded.
  *
  * A partial refund leaves the status alone. There is no partially_refunded
- * state, and inventing one would mean a migration plus a new case in every
+ * state, and inventing one would cost a migration plus a new case in every
  * status filter; refundedCents already carries the fact.
  *
  * Fulfilment is not cleared. The parcel shipped, and erasing the carrier and
