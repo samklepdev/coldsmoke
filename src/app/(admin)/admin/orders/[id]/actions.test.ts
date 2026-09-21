@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vites
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
+import { FakePayments } from "@/lib/payments/fake";
+import { setPayments } from "@/lib/payments";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
 
@@ -20,19 +22,25 @@ vi.mock("@/lib/email/shipping", () => ({
   sendShippingConfirmation: () => sendShippingConfirmation(),
 }));
 
+// A spy rather than a plain stub, so the gate itself can be asserted. Mocking
+// the module wholesale is what made deleting requireAdminUser from an action
+// invisible to the whole suite.
+const requireAdminUser = vi.fn(async () => ({
+  id: "admin1",
+  email: "admin@example.com",
+  name: "Admin",
+  role: "admin",
+  emailVerified: true,
+}));
 vi.mock("@/lib/auth/session", () => ({
-  requireAdminUser: async () => ({
-    id: "admin1",
-    email: "admin@example.com",
-    name: "Admin",
-    role: "admin",
-    emailVerified: true,
-  }),
+  requireAdminUser: () => requireAdminUser(),
 }));
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-const { fulfillAction } = await import("./actions");
+const { fulfillAction, resendShippingAction, refundAction } = await import(
+  "./actions"
+);
 
 const ADDRESS = {
   name: "Test Buyer",
@@ -76,6 +84,8 @@ beforeEach(async () => {
   await ctx.truncate();
   sendShippingConfirmation.mockReset();
   sendShippingConfirmation.mockResolvedValue({ delivered: true });
+  requireAdminUser.mockClear();
+  setPayments(new FakePayments());
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -154,5 +164,63 @@ describe("fulfillAction", () => {
 
     expect(state).toMatchObject({ status: "error" });
     expect(sendShippingConfirmation).not.toHaveBeenCalled();
+  });
+});
+
+describe("resendShippingAction", () => {
+  it("refuses an order that has not shipped", async () => {
+    // Without this guard a POST against a paid order emails the customer
+    // "your order is on its way" with a blank carrier and tracking number.
+    const order = await seedOrder("paid");
+
+    const state = await resendShippingAction(
+      { status: "idle" },
+      form({ orderId: order.id }),
+    );
+
+    expect(state).toMatchObject({ status: "error" });
+    expect(sendShippingConfirmation).not.toHaveBeenCalled();
+  });
+
+  it("resends for an order that really did ship", async () => {
+    const order = await seedOrder("paid");
+    await fulfillAction(
+      { status: "idle" },
+      form({ orderId: order.id, carrier: "USPS", trackingNumber: "TRACK1" }),
+    );
+    sendShippingConfirmation.mockClear();
+
+    const state = await resendShippingAction(
+      { status: "idle" },
+      form({ orderId: order.id }),
+    );
+
+    expect(state).toEqual({ status: "fulfilled" });
+    expect(sendShippingConfirmation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the admin gate", () => {
+  it("is called by every action that changes an order", async () => {
+    // The layout gates /admin, but a Server Action is its own entry point:
+    // reachable by POST without the layout ever rendering. Mocking the session
+    // module wholesale means deleting the call would leave every other test
+    // green, so assert the call itself.
+    const order = await seedOrder("paid");
+    requireAdminUser.mockClear();
+
+    await fulfillAction(
+      { status: "idle" },
+      form({ orderId: order.id, carrier: "USPS", trackingNumber: "T" }),
+    );
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
+
+    requireAdminUser.mockClear();
+    await resendShippingAction({ status: "idle" }, form({ orderId: order.id }));
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
+
+    requireAdminUser.mockClear();
+    await refundAction({ status: "idle" }, form({ orderId: order.id }));
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
   });
 });

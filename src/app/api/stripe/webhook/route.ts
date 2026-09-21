@@ -44,7 +44,18 @@ export async function POST(request: Request) {
       }
 
       case "charge.refunded": {
-        if (!event.paymentIntentId || event.amountCents === null) break;
+        if (!event.paymentIntentId || event.amountCents === null) {
+          // Acknowledged rather than retried: a refund we cannot tie to a
+          // payment intent will not become tieable on a second delivery, so
+          // a non-2xx would just retry forever. But it is real money moving
+          // with no order we can find, so it must not pass in silence.
+          console.error("[webhook] charge.refunded without a usable intent", {
+            eventId: event.id,
+            paymentIntentId: event.paymentIntentId,
+            amountCents: event.amountCents,
+          });
+          break;
+        }
 
         // amountCents is amount_refunded -- the cumulative total for the
         // charge, which is why recordRefund sets rather than accumulates.

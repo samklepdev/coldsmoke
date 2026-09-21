@@ -80,7 +80,14 @@ export async function fulfillAction(
   return { status: delivered ? "fulfilled" : "fulfilled-undelivered" };
 }
 
-/** Sends the shipping confirmation again for an order already fulfilled. */
+/**
+ * Sends the shipping confirmation again for an order already fulfilled.
+ *
+ * The fulfilled check is not decoration. This is a Server Action, so it is
+ * reachable by POST against any order id; without it, an order that has not
+ * shipped would be emailed "your order is on its way" with a blank carrier
+ * and tracking number, because those columns are only written by fulfillOrder.
+ */
 export async function resendShippingAction(
   _prev: FulfillState,
   formData: FormData,
@@ -94,6 +101,13 @@ export async function resendShippingAction(
 
   const order = await findOrderById(orderId.data);
   if (!order) return { status: "error", error: "Unknown order." };
+
+  if (order.status !== "fulfilled" || !order.carrier || !order.trackingNumber) {
+    return {
+      status: "error",
+      error: "That order has not shipped, so there is no shipping email to resend.",
+    };
+  }
 
   const { delivered } = await sendShippingConfirmation(order);
 

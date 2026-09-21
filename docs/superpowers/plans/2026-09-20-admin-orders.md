@@ -377,6 +377,49 @@ test("shows a signed-in customer the not-found page, not a redirect", async ({ p
   await expect(page.getByText("This page could not be found.")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Admin" })).toHaveCount(0);
 });
+
+test("shows an admin the orders list", async ({ page }) => {
+  // The positive case. Without it the two tests above would still pass if the
+  // admin shell were broken for everyone -- "nobody can see it" is only half
+  // the guarantee, and the half that does not keep the business running.
+  const email = `admin-real-${Date.now()}@example.com`;
+
+  await page.goto("/sign-up");
+  await page.getByLabel("Your name").fill("Real Admin");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("correct horse battery");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("status").or(page.getByRole("alert"))).toBeVisible();
+
+  await expect
+    .poll(async () => {
+      const [row] = await db.select().from(user).where(eq(user.email, email));
+      return row?.id;
+    })
+    .toBeTruthy();
+  // Stands in for clicking the verification link and running db:promote-admin.
+  await db
+    .update(user)
+    .set({ emailVerified: true, role: "admin" })
+    .where(eq(user.email, email));
+
+  await page.goto("/sign-in");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("correct horse battery");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  // Wait for the session to actually land, or the next navigation races it
+  // and bounces off the gate straight back to sign-in.
+  await expect(page).toHaveURL(/\/account\/orders$/);
+
+  await page.goto("/admin/orders");
+
+  await expect(page).toHaveURL(/\/admin\/orders$/);
+  await expect(page.getByRole("heading", { name: "Orders" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Admin" })).toBeVisible();
+  await expect(page.getByLabel("Search orders")).toBeVisible();
+  // The not-found UI must NOT be what rendered.
+  await expect(page.getByText("This page could not be found.")).toHaveCount(0);
+});
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -1750,6 +1793,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vites
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
 import { orders } from "@/lib/db/schema";
+import { FakePayments } from "@/lib/payments/fake";
+import { setPayments } from "@/lib/payments";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
 
@@ -1768,19 +1813,25 @@ vi.mock("@/lib/email/shipping", () => ({
   sendShippingConfirmation: () => sendShippingConfirmation(),
 }));
 
+// A spy rather than a plain stub, so the gate itself can be asserted. Mocking
+// the module wholesale is what made deleting requireAdminUser from an action
+// invisible to the whole suite.
+const requireAdminUser = vi.fn(async () => ({
+  id: "admin1",
+  email: "admin@example.com",
+  name: "Admin",
+  role: "admin",
+  emailVerified: true,
+}));
 vi.mock("@/lib/auth/session", () => ({
-  requireAdminUser: async () => ({
-    id: "admin1",
-    email: "admin@example.com",
-    name: "Admin",
-    role: "admin",
-    emailVerified: true,
-  }),
+  requireAdminUser: () => requireAdminUser(),
 }));
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-const { fulfillAction } = await import("./actions");
+const { fulfillAction, resendShippingAction, refundAction } = await import(
+  "./actions"
+);
 
 const ADDRESS = {
   name: "Test Buyer",
@@ -1824,6 +1875,8 @@ beforeEach(async () => {
   await ctx.truncate();
   sendShippingConfirmation.mockReset();
   sendShippingConfirmation.mockResolvedValue({ delivered: true });
+  requireAdminUser.mockClear();
+  setPayments(new FakePayments());
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -1902,6 +1955,64 @@ describe("fulfillAction", () => {
 
     expect(state).toMatchObject({ status: "error" });
     expect(sendShippingConfirmation).not.toHaveBeenCalled();
+  });
+});
+
+describe("resendShippingAction", () => {
+  it("refuses an order that has not shipped", async () => {
+    // Without this guard a POST against a paid order emails the customer
+    // "your order is on its way" with a blank carrier and tracking number.
+    const order = await seedOrder("paid");
+
+    const state = await resendShippingAction(
+      { status: "idle" },
+      form({ orderId: order.id }),
+    );
+
+    expect(state).toMatchObject({ status: "error" });
+    expect(sendShippingConfirmation).not.toHaveBeenCalled();
+  });
+
+  it("resends for an order that really did ship", async () => {
+    const order = await seedOrder("paid");
+    await fulfillAction(
+      { status: "idle" },
+      form({ orderId: order.id, carrier: "USPS", trackingNumber: "TRACK1" }),
+    );
+    sendShippingConfirmation.mockClear();
+
+    const state = await resendShippingAction(
+      { status: "idle" },
+      form({ orderId: order.id }),
+    );
+
+    expect(state).toEqual({ status: "fulfilled" });
+    expect(sendShippingConfirmation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the admin gate", () => {
+  it("is called by every action that changes an order", async () => {
+    // The layout gates /admin, but a Server Action is its own entry point:
+    // reachable by POST without the layout ever rendering. Mocking the session
+    // module wholesale means deleting the call would leave every other test
+    // green, so assert the call itself.
+    const order = await seedOrder("paid");
+    requireAdminUser.mockClear();
+
+    await fulfillAction(
+      { status: "idle" },
+      form({ orderId: order.id, carrier: "USPS", trackingNumber: "T" }),
+    );
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
+
+    requireAdminUser.mockClear();
+    await resendShippingAction({ status: "idle" }, form({ orderId: order.id }));
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
+
+    requireAdminUser.mockClear();
+    await refundAction({ status: "idle" }, form({ orderId: order.id }));
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
   });
 });
 ```
@@ -1998,7 +2109,14 @@ export async function fulfillAction(
   return { status: delivered ? "fulfilled" : "fulfilled-undelivered" };
 }
 
-/** Sends the shipping confirmation again for an order already fulfilled. */
+/**
+ * Sends the shipping confirmation again for an order already fulfilled.
+ *
+ * The fulfilled check is not decoration. This is a Server Action, so it is
+ * reachable by POST against any order id; without it, an order that has not
+ * shipped would be emailed "your order is on its way" with a blank carrier
+ * and tracking number, because those columns are only written by fulfillOrder.
+ */
 export async function resendShippingAction(
   _prev: FulfillState,
   formData: FormData,
@@ -2012,6 +2130,13 @@ export async function resendShippingAction(
 
   const order = await findOrderById(orderId.data);
   if (!order) return { status: "error", error: "Unknown order." };
+
+  if (order.status !== "fulfilled" || !order.carrier || !order.trackingNumber) {
+    return {
+      status: "error",
+      error: "That order has not shipped, so there is no shipping email to resend.",
+    };
+  }
 
   const { delivered } = await sendShippingConfirmation(order);
 
@@ -2535,7 +2660,59 @@ describe("recordRefund", () => {
   it("throws when no order matches the payment intent", async () => {
     // Money moved with no order behind it. Throwing makes the webhook return
     // non-2xx so Stripe retries and surfaces it, rather than swallowing it.
-    await expect(recordRefund("pi_missing", "evt_1", 5100)).rejects.toThrow();
+    //
+    // Asserts the specific error, not merely that something threw: a bare
+    // toThrow() here would pass on a typo or a dropped connection and still
+    // look like this path was covered. This project has been caught by that
+    // family three times.
+    await expect(
+      recordRefund("pi_missing", "evt_1", 5100),
+    ).rejects.toMatchObject({ name: "OrderNotFoundForPaymentError" });
+  });
+});
+
+describe("recordRefund ordering and preconditions", () => {
+  it("never lets refundedCents go backwards", async () => {
+    // Stripe does not guarantee event order. Two dashboard partials of 1000
+    // then 1500 emit cumulative 1000 then 2500; delivered out of order an
+    // unconditional SET would leave 1000 on an order the 2500 event had
+    // already marked refunded -- books saying 1000 on a fully refunded order,
+    // which refundOrder then refuses to touch.
+    const order = await seedOrder("paid");
+
+    await recordRefund("pi_test_1", "evt_late", 2500);
+    await recordRefund("pi_test_1", "evt_early", 1000);
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(2500);
+  });
+
+  it("keeps the order refunded when a stale smaller event arrives after", async () => {
+    const order = await seedOrder("paid");
+
+    await recordRefund("pi_test_1", "evt_full", 5100);
+    await recordRefund("pi_test_1", "evt_stale", 1000);
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(5100);
+    expect(row.status).toBe("refunded");
+  });
+
+  it("refuses to refund an order that was never paid", async () => {
+    // If charge.refunded beats payment_intent.succeeded, writing "refunded"
+    // over "pending" strands the reservation forever and makes the retried
+    // succeeded event throw StrandedPaymentError until Stripe gives up.
+    // Throwing here instead returns non-2xx, so Stripe retries this event
+    // after the order has become paid.
+    const order = await seedOrder("pending");
+
+    await expect(recordRefund("pi_test_1", "evt_early_refund", 5100)).rejects.toThrow(
+      /not paid/i,
+    );
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.status).toBe("pending");
+    expect(row.refundedCents).toBe(0);
   });
 });
 ```
@@ -2606,10 +2783,24 @@ export async function refundOrder(args: {
  * The only path that sets status 'refunded'. Idempotent via the stripe_events
  * ledger, exactly like markOrderPaid -- a replayed webhook returns null.
  *
- * `refundedCents` is SET, never accumulated. Stripe reports amount_refunded
- * as the cumulative total for the charge, so two partial refunds of 1000 and
- * 1500 arrive as 1000 then 2500. Adding them yields 3500 and would wrongly
- * mark a half-refunded order as fully refunded.
+ * `refundedCents` is SET from Stripe's cumulative amount_refunded, never
+ * accumulated: two partial refunds of 1000 and 1500 arrive as 1000 then 2500,
+ * and adding them yields 3500 on a 2500 refund.
+ *
+ * But the set is monotonic, because Stripe does not guarantee event order.
+ * Delivered 2500 then 1000, a plain assignment leaves 1000 on an order the
+ * 2500 event already marked refunded -- the books disagreeing with the status,
+ * and refundOrder refusing to touch it because it is "refunded". The ledger
+ * cannot catch this: the two events have different ids and both are genuinely
+ * new. GREATEST makes late-but-stale events harmless.
+ *
+ * A refund is only meaningful against money we recorded taking, so an order
+ * that is not paid or fulfilled is refused rather than written. That matters
+ * for ordering too: if charge.refunded beats payment_intent.succeeded, writing
+ * "refunded" over "pending" would strand the stock reservation forever and
+ * make the retried succeeded event throw StrandedPaymentError until Stripe
+ * gives up. Throwing returns non-2xx, so Stripe retries this event once the
+ * order is paid.
  *
  * A partial refund leaves the status alone. There is no partially_refunded
  * state, and inventing one would cost a migration plus a new case in every
@@ -2642,14 +2833,28 @@ export async function recordRefund(
       throw new OrderNotFoundForPaymentError(paymentIntentId);
     }
 
-    const fullyRefunded = refundedCents >= existing.totalCents;
+    if (
+      existing.status !== "paid" &&
+      existing.status !== "fulfilled" &&
+      existing.status !== "refunded"
+    ) {
+      throw new OrderNotRefundableError(
+        existing.id,
+        `it is "${existing.status}", not paid`,
+      );
+    }
+
+    // Never below what is already recorded: a stale event carrying a smaller
+    // cumulative total must not walk the figure backwards.
+    const applied = Math.max(refundedCents, existing.refundedCents);
+    const fullyRefunded = applied >= existing.totalCents;
 
     const [order] = await tx
       .update(orders)
       .set(
         fullyRefunded
-          ? { refundedCents, status: "refunded" as const }
-          : { refundedCents },
+          ? { refundedCents: applied, status: "refunded" as const }
+          : { refundedCents: applied },
       )
       .where(eq(orders.id, existing.id))
       .returning();

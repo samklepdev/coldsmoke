@@ -195,6 +195,58 @@ describe("recordRefund", () => {
   it("throws when no order matches the payment intent", async () => {
     // Money moved with no order behind it. Throwing makes the webhook return
     // non-2xx so Stripe retries and surfaces it, rather than swallowing it.
-    await expect(recordRefund("pi_missing", "evt_1", 5100)).rejects.toThrow();
+    //
+    // Asserts the specific error, not merely that something threw: a bare
+    // toThrow() here would pass on a typo or a dropped connection and still
+    // look like this path was covered. This project has been caught by that
+    // family three times.
+    await expect(
+      recordRefund("pi_missing", "evt_1", 5100),
+    ).rejects.toMatchObject({ name: "OrderNotFoundForPaymentError" });
+  });
+});
+
+describe("recordRefund ordering and preconditions", () => {
+  it("never lets refundedCents go backwards", async () => {
+    // Stripe does not guarantee event order. Two dashboard partials of 1000
+    // then 1500 emit cumulative 1000 then 2500; delivered out of order an
+    // unconditional SET would leave 1000 on an order the 2500 event had
+    // already marked refunded -- books saying 1000 on a fully refunded order,
+    // which refundOrder then refuses to touch.
+    const order = await seedOrder("paid");
+
+    await recordRefund("pi_test_1", "evt_late", 2500);
+    await recordRefund("pi_test_1", "evt_early", 1000);
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(2500);
+  });
+
+  it("keeps the order refunded when a stale smaller event arrives after", async () => {
+    const order = await seedOrder("paid");
+
+    await recordRefund("pi_test_1", "evt_full", 5100);
+    await recordRefund("pi_test_1", "evt_stale", 1000);
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(5100);
+    expect(row.status).toBe("refunded");
+  });
+
+  it("refuses to refund an order that was never paid", async () => {
+    // If charge.refunded beats payment_intent.succeeded, writing "refunded"
+    // over "pending" strands the reservation forever and makes the retried
+    // succeeded event throw StrandedPaymentError until Stripe gives up.
+    // Throwing here instead returns non-2xx, so Stripe retries this event
+    // after the order has become paid.
+    const order = await seedOrder("pending");
+
+    await expect(recordRefund("pi_test_1", "evt_early_refund", 5100)).rejects.toThrow(
+      /not paid/i,
+    );
+
+    const [row] = await ctx.db.select().from(orders).where(eq(orders.id, order.id));
+    expect(row.status).toBe("pending");
+    expect(row.refundedCents).toBe(0);
   });
 });

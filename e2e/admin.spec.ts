@@ -69,3 +69,46 @@ test("shows a signed-in customer the not-found page, not a redirect", async ({ p
   await expect(page.getByText("This page could not be found.")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Admin" })).toHaveCount(0);
 });
+
+test("shows an admin the orders list", async ({ page }) => {
+  // The positive case. Without it the two tests above would still pass if the
+  // admin shell were broken for everyone -- "nobody can see it" is only half
+  // the guarantee, and the half that does not keep the business running.
+  const email = `admin-real-${Date.now()}@example.com`;
+
+  await page.goto("/sign-up");
+  await page.getByLabel("Your name").fill("Real Admin");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("correct horse battery");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("status").or(page.getByRole("alert"))).toBeVisible();
+
+  await expect
+    .poll(async () => {
+      const [row] = await db.select().from(user).where(eq(user.email, email));
+      return row?.id;
+    })
+    .toBeTruthy();
+  // Stands in for clicking the verification link and running db:promote-admin.
+  await db
+    .update(user)
+    .set({ emailVerified: true, role: "admin" })
+    .where(eq(user.email, email));
+
+  await page.goto("/sign-in");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("correct horse battery");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  // Wait for the session to actually land, or the next navigation races it
+  // and bounces off the gate straight back to sign-in.
+  await expect(page).toHaveURL(/\/account\/orders$/);
+
+  await page.goto("/admin/orders");
+
+  await expect(page).toHaveURL(/\/admin\/orders$/);
+  await expect(page.getByRole("heading", { name: "Orders" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Admin" })).toBeVisible();
+  await expect(page.getByLabel("Search orders")).toBeVisible();
+  // The not-found UI must NOT be what rendered.
+  await expect(page.getByText("This page could not be found.")).toHaveCount(0);
+});

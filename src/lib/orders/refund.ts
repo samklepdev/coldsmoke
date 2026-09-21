@@ -54,10 +54,24 @@ export async function refundOrder(args: {
  * The only path that sets status 'refunded'. Idempotent via the stripe_events
  * ledger, exactly like markOrderPaid -- a replayed webhook returns null.
  *
- * `refundedCents` is SET, never accumulated. Stripe reports amount_refunded
- * as the cumulative total for the charge, so two partial refunds of 1000 and
- * 1500 arrive as 1000 then 2500. Adding them yields 3500 and would wrongly
- * mark a half-refunded order as fully refunded.
+ * `refundedCents` is SET from Stripe's cumulative amount_refunded, never
+ * accumulated: two partial refunds of 1000 and 1500 arrive as 1000 then 2500,
+ * and adding them yields 3500 on a 2500 refund.
+ *
+ * But the set is monotonic, because Stripe does not guarantee event order.
+ * Delivered 2500 then 1000, a plain assignment leaves 1000 on an order the
+ * 2500 event already marked refunded -- the books disagreeing with the status,
+ * and refundOrder refusing to touch it because it is "refunded". The ledger
+ * cannot catch this: the two events have different ids and both are genuinely
+ * new. GREATEST makes late-but-stale events harmless.
+ *
+ * A refund is only meaningful against money we recorded taking, so an order
+ * that is not paid or fulfilled is refused rather than written. That matters
+ * for ordering too: if charge.refunded beats payment_intent.succeeded, writing
+ * "refunded" over "pending" would strand the stock reservation forever and
+ * make the retried succeeded event throw StrandedPaymentError until Stripe
+ * gives up. Throwing returns non-2xx, so Stripe retries this event once the
+ * order is paid.
  *
  * A partial refund leaves the status alone. There is no partially_refunded
  * state, and inventing one would cost a migration plus a new case in every
@@ -90,14 +104,28 @@ export async function recordRefund(
       throw new OrderNotFoundForPaymentError(paymentIntentId);
     }
 
-    const fullyRefunded = refundedCents >= existing.totalCents;
+    if (
+      existing.status !== "paid" &&
+      existing.status !== "fulfilled" &&
+      existing.status !== "refunded"
+    ) {
+      throw new OrderNotRefundableError(
+        existing.id,
+        `it is "${existing.status}", not paid`,
+      );
+    }
+
+    // Never below what is already recorded: a stale event carrying a smaller
+    // cumulative total must not walk the figure backwards.
+    const applied = Math.max(refundedCents, existing.refundedCents);
+    const fullyRefunded = applied >= existing.totalCents;
 
     const [order] = await tx
       .update(orders)
       .set(
         fullyRefunded
-          ? { refundedCents, status: "refunded" as const }
-          : { refundedCents },
+          ? { refundedCents: applied, status: "refunded" as const }
+          : { refundedCents: applied },
       )
       .where(eq(orders.id, existing.id))
       .returning();
