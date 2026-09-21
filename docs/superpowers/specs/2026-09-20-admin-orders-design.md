@@ -88,9 +88,9 @@ src/app/(admin)/admin/
 
 src/lib/auth/session.ts      + requireAdminUser()
 src/lib/orders/
+  errors.ts                  the three new typed errors
   fulfill.ts                 fulfillOrder()
-  refund.ts                  refundOrder()
-  recordRefund.ts            applied by the webhook
+  refund.ts                  refundOrder() + recordRefund()
   adminList.ts               listOrdersForAdmin() — reads only
 src/lib/email/
   ShippingConfirmation.tsx   template
@@ -131,10 +131,18 @@ survives a reload and can be sent to someone.
 ### Module split
 
 The division inside `src/lib/orders/` is **transition versus query**, not admin
-versus store. `fulfill.ts`, `refund.ts` and `recordRefund.ts` change state and
-sit beside `markPaid.ts`. `adminList.ts` only reads. This is what keeps the
-invariant "only the webhook may move an order to `paid` or `refunded`"
-inspectable.
+versus store. `fulfill.ts` and `refund.ts` change state and sit alongside
+`markOrderPaid()`; `adminList.ts` only reads. This is what keeps the invariant
+"only the webhook may move an order to `paid` or `refunded`" inspectable.
+
+`refundOrder()` and `recordRefund()` share `refund.ts` because they are two
+halves of one flow — the request and its confirmation — and reading either
+without the other invites the mistake of writing status in the wrong one.
+
+The new files are imported directly (`@/lib/orders/fulfill`), the way
+`claim.ts` and `access.ts` already are, rather than re-exported from
+`index.ts`. That keeps the dependency one-way: the new files may import the
+types and errors in `index.ts`, and `index.ts` never imports them back.
 
 ---
 
