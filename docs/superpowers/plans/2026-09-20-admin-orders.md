@@ -448,10 +448,13 @@ where this project defines them — not `globals.css`. Use them as written.
 - [ ] **Step 6: Run the e2e test**
 
 ```bash
-npm run dev &
 npx playwright test e2e/admin.spec.ts
 ```
 Expected: PASS, 2 tests.
+
+Do not start a dev server yourself. `playwright.config.ts` declares a
+`webServer` running `npm run dev` with `reuseExistingServer`, so Playwright
+starts one if none is running and reuses yours if one is.
 
 - [ ] **Step 7: Commit**
 
