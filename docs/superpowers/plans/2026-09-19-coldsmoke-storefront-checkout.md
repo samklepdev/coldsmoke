@@ -2703,6 +2703,12 @@ export interface PaymentsAdapter {
   refund(args: {
     paymentIntentId: string;
     amountCents: number;
+    /**
+     * Stable per logical refund. Two submits of the same refund send the same
+     * key, so Stripe returns the original refund instead of issuing a second
+     * one or rejecting the amount as exceeding what is left.
+     */
+    idempotencyKey: string;
   }): Promise<{ refundId: string }>;
 
   verifyWebhook(rawBody: string, signature: string): WebhookEvent;
@@ -2817,11 +2823,12 @@ export class StripePayments implements PaymentsAdapter {
   async refund({
     paymentIntentId,
     amountCents,
+    idempotencyKey,
   }: Parameters<PaymentsAdapter["refund"]>[0]) {
-    const refund = await stripe.refunds.create({
-      payment_intent: paymentIntentId,
-      amount: amountCents,
-    });
+    const refund = await stripe.refunds.create(
+      { payment_intent: paymentIntentId, amount: amountCents },
+      { idempotencyKey },
+    );
     return { refundId: refund.id };
   }
 
@@ -2877,7 +2884,11 @@ type FakeIntent = { amountCents: number; orderId: string; status: string };
  */
 export class FakePayments implements PaymentsAdapter {
   public intents = new Map<string, FakeIntent>();
-  public refunds: { paymentIntentId: string; amountCents: number }[] = [];
+  public refunds: {
+    paymentIntentId: string;
+    amountCents: number;
+    idempotencyKey: string;
+  }[] = [];
   private counter = 0;
 
   async calculateTax({
@@ -2929,8 +2940,17 @@ export class FakePayments implements PaymentsAdapter {
   async refund({
     paymentIntentId,
     amountCents,
+    idempotencyKey,
   }: Parameters<PaymentsAdapter["refund"]>[0]) {
-    this.refunds.push({ paymentIntentId, amountCents });
+    // Mirrors Stripe: a repeated key returns the original refund rather than
+    // creating a second one. Without this the fake would happily record two
+    // refunds for a double submit and the tests would not catch a real one.
+    const seen = this.refunds.findIndex(
+      (r) => r.idempotencyKey === idempotencyKey,
+    );
+    if (seen !== -1) return { refundId: `re_fake_${seen + 1}` };
+
+    this.refunds.push({ paymentIntentId, amountCents, idempotencyKey });
     return { refundId: `re_fake_${this.refunds.length}` };
   }
 
@@ -5928,6 +5948,7 @@ import { db } from "@/lib/db/client";
 import { orders, stripeEvents } from "@/lib/db/schema";
 import { getPayments } from "@/lib/payments";
 import { markOrderPaid, findOrderById } from "@/lib/orders";
+import { recordRefund } from "@/lib/orders/refund";
 import { sendOrderConfirmation } from "@/lib/email";
 import { clearCart } from "@/lib/cart";
 
@@ -5963,6 +5984,18 @@ export async function POST(request: Request) {
       case "payment_intent.payment_failed": {
         if (!event.paymentIntentId) break;
         await handleFailure(event.id, event.paymentIntentId);
+        break;
+      }
+
+      case "charge.refunded": {
+        if (!event.paymentIntentId || event.amountCents === null) break;
+
+        // amountCents is amount_refunded -- the cumulative total for the
+        // charge, which is why recordRefund sets rather than accumulates.
+        // Letting this throw is deliberate: it produces a non-2xx, rolls back
+        // the ledger row, and has Stripe retry. Money that moved with no
+        // order behind it must never be answered with a 200.
+        await recordRefund(event.paymentIntentId, event.id, event.amountCents);
         break;
       }
 

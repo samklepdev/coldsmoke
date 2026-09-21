@@ -12,12 +12,22 @@ import path from "node:path";
  */
 
 const ROOT = path.resolve(__dirname, "../..");
-const PLAN = path.join(
-  ROOT,
-  "docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md",
-);
 
-const plan = readFileSync(PLAN, "utf8");
+/**
+ * Every plan whose code blocks must still describe the shipped code.
+ *
+ * Add a plan here when its implementation lands. A plan left off this list is
+ * unguarded, which is the state this file exists to prevent -- and the
+ * omission is silent, because the suite stays green either way.
+ */
+const PLANS = [
+  "docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md",
+  "docs/superpowers/plans/2026-09-20-admin-orders.md",
+].map((p) => path.join(ROOT, p));
+
+// Joined with blank lines: the block parser is anchored on "Create `path`:"
+// headings, so concatenating cannot invent a heading that spans two documents.
+const plan = PLANS.map((p) => readFileSync(p, "utf8")).join("\n\n");
 
 const PARTIAL_MARKER = /<!--\s*plan-drift:\s*partial\s*—\s*(.+?)\s*-->/;
 
@@ -43,7 +53,11 @@ function parseBlocks(): Block[] {
     const reason = marker?.match(PARTIAL_MARKER)?.[1] ?? null;
     blocks.push({
       path: file,
-      code: code.trim(),
+      // Trailing whitespace only. `.trim()` also stripped the indentation from
+      // the FIRST line, so an appended block that starts indented -- which a
+      // fragment spliced into an existing file usually does -- could never
+      // match the shipped line and was silently unverifiable.
+      code: code.replace(/\s+$/, ""),
       partialReason: reason,
       kind: verb === "Create" ? "create" : "append",
     });

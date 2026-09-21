@@ -307,13 +307,36 @@ Create `e2e/admin.spec.ts`:
 
 ```ts
 import { test, expect } from "@playwright/test";
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { user } from "@/lib/db/auth-schema";
 
 /**
  * The /admin boundary.
  *
- * The 404 assertion is the security one. A redirect would confirm the route
- * exists to anyone who tried it; the point is that a customer cannot tell
- * /admin apart from a path that was never registered.
+ * A signed-out visitor gets redirected to sign-in -- confirming the route
+ * exists is fine before anyone is authenticated. A signed-in customer
+ * instead has to get AdminLayout's notFound(), not a redirect: a redirect
+ * would confirm /admin is real to anyone who tried it, and the whole point
+ * of the 404 is that a customer cannot tell it apart from a path that was
+ * never registered.
+ *
+ * That second case needs a genuinely authenticated, non-admin session, which
+ * sign-up alone does not produce: with requireEmailVerification on, sign-up
+ * does not set a session cookie, and Resend refuses every send in this
+ * environment (no verified sending domain), so there is no inbox to click a
+ * link from. The DB write below stands in for that click.
+ *
+ * It also means the customer-vs-signed-out cases cannot be told apart by
+ * HTTP status alone. notFound() is thrown after an `await` (the session
+ * lookup), and by the time it fires Next has already sent a 200 and is
+ * streaming the not-found UI into the body -- see the "Status Codes" section
+ * of node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/loading.md.
+ * Confirmed with curl against both `next dev` and a production build: same
+ * 200, same chunked body, in both. So this asserts what the boundary
+ * actually guarantees -- no redirect, and the not-found UI renders instead
+ * of the admin shell -- rather than a status code Next documents as
+ * unreliable for exactly this case.
  */
 
 test("sends a signed-out visitor to sign-in", async ({ page }) => {
@@ -322,7 +345,7 @@ test("sends a signed-out visitor to sign-in", async ({ page }) => {
   await expect(page).toHaveURL(/\/sign-in\?next=/);
 });
 
-test("shows a signed-in customer a 404, not a redirect", async ({ page }) => {
+test("shows a signed-in customer the not-found page, not a redirect", async ({ page }) => {
   const email = `admin-guard-${Date.now()}@example.com`;
 
   await page.goto("/sign-up");
@@ -332,10 +355,27 @@ test("shows a signed-in customer a 404, not a redirect", async ({ page }) => {
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page.getByRole("status").or(page.getByRole("alert"))).toBeVisible();
 
-  const response = await page.goto("/admin/orders");
+  // The row can lag a beat behind the confirmation UI, so poll for it rather
+  // than racing the insert.
+  await expect
+    .poll(async () => {
+      const [row] = await db.select().from(user).where(eq(user.email, email));
+      return row?.id;
+    })
+    .toBeTruthy();
+  await db.update(user).set({ emailVerified: true }).where(eq(user.email, email));
 
-  expect(response?.status()).toBe(404);
+  await page.goto("/sign-in");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("correct horse battery");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).toHaveURL(/\/account\/orders$/);
+
+  await page.goto("/admin/orders");
+
   await expect(page).toHaveURL(/\/admin\/orders$/);
+  await expect(page.getByText("This page could not be found.")).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Admin" })).toHaveCount(0);
 });
 ```
 
@@ -2105,8 +2145,9 @@ usual input attributes.
 
 - [ ] **Step 6: Mount it on the detail page**
 
-Append to `src/app/(admin)/admin/orders/[id]/page.tsx`, immediately before the
-closing `</section>`:
+Place this immediately before the closing `</section>`.
+
+Append to `src/app/(admin)/admin/orders/[id]/page.tsx`:
 
 ```tsx
       {order.status === "paid" ? (
@@ -2151,9 +2192,11 @@ git commit -m "feat: fulfil an order and report a failed shipping email"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `src/lib/payments/fake.test.ts` as a new top-level `describe`, after
-the existing `describe("FakePayments", …)` block. `FakePayments` is already
-imported at the top of that file, so no import change is needed.
+Add this as a new top-level `describe`, after the existing
+`describe("FakePayments", …)` block. `FakePayments` is already imported at the
+top of that file, so no import change is needed.
+
+Append to `src/lib/payments/fake.test.ts`:
 
 ```ts
 describe("FakePayments refunds", () => {
@@ -2641,15 +2684,16 @@ git commit -m "feat: add refundOrder and recordRefund"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `src/app/api/stripe/webhook/route.test.ts`. This uses that file's
-existing helpers: `post(body)` posts a signed request, `placeOrder()` creates
+This uses that file's existing helpers: `post(body)` posts a signed request, `placeOrder()` creates
 a pending order, and `fake` is the `FakePayments` instance whose
 `verifyWebhook` simply parses the body — so a refund event is written as
 plain JSON.
 
+Append to `src/app/api/stripe/webhook/route.test.ts`:
+
 ```ts
 describe("charge.refunded", () => {
-  /** Places an order and drives it to paid, which is the only refundable state. */
+  /** Places an order and drives it to paid, the only refundable state. */
   async function paidOrder() {
     const order = await placeOrder();
     await post(fake.succeededEvent(order.stripePaymentIntentId!));
@@ -2660,13 +2704,16 @@ describe("charge.refunded", () => {
     return row;
   }
 
+  /**
+   * amountCents here is Stripe's amount_refunded: the CUMULATIVE total for
+   * the charge, not the amount of this one refund. That is why recordRefund
+   * sets rather than accumulates.
+   */
   function refundEvent(
     paymentIntentId: string,
     amountCents: number,
     eventId: string,
   ): string {
-    // amountCents is Stripe's amount_refunded: the cumulative total for the
-    // charge, not the amount of this one refund.
     return JSON.stringify({
       id: eventId,
       type: "charge.refunded",
@@ -2695,9 +2742,7 @@ describe("charge.refunded", () => {
   it("leaves a partially refunded order paid", async () => {
     const order = await paidOrder();
 
-    await post(
-      refundEvent(order.stripePaymentIntentId!, 1000, "evt_refund_2"),
-    );
+    await post(refundEvent(order.stripePaymentIntentId!, 1000, "evt_refund_2"));
 
     const [row] = await ctx.db
       .select()
@@ -2708,12 +2753,27 @@ describe("charge.refunded", () => {
   });
 
   it("returns non-2xx when no order matches, so Stripe retries", async () => {
-    // Money moved with no order behind it. A 200 here loses it silently.
+    // Money moved with no order behind it. A 200 here loses it silently, with
+    // nothing left to reconcile against.
     const response = await post(
       refundEvent("pi_no_such_order", 5100, "evt_refund_3"),
     );
 
     expect(response.status).toBe(500);
+  });
+
+  it("is idempotent when Stripe replays the refund", async () => {
+    const order = await paidOrder();
+    const event = refundEvent(order.stripePaymentIntentId!, 1000, "evt_refund_4");
+
+    expect((await post(event)).status).toBe(200);
+    expect((await post(event)).status).toBe(200);
+
+    const [row] = await ctx.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, order.id));
+    expect(row.refundedCents).toBe(1000);
   });
 });
 ```
@@ -2932,8 +2992,8 @@ export type RefundState =
  *
  * The order still reads "paid" or "fulfilled" afterwards, because the webhook
  * has not arrived yet. That is honest rather than sloppy: the refund is not
- * final until Stripe says so, and claiming otherwise here would mean two
- * different writers disagreeing about the same order.
+ * final until Stripe says so, and writing the status here would make this a
+ * second writer that could disagree with the webhook about the same order.
  */
 export async function refundAction(
   _prev: RefundState,
@@ -3022,8 +3082,9 @@ export function RefundButton({
 
 - [ ] **Step 6: Mount it**
 
-Append to `src/app/(admin)/admin/orders/[id]/page.tsx`, before the closing
-`</section>`:
+Place this before the closing `</section>`.
+
+Append to `src/app/(admin)/admin/orders/[id]/page.tsx`:
 
 ```tsx
       {(order.status === "paid" || order.status === "fulfilled") &&
