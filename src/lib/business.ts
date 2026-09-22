@@ -18,12 +18,11 @@
  * sentence.
  */
 export const BUSINESS = {
-  legalName: "[legal name]",
-  addressLine1: "[street address]",
-  addressLocality: "[city, state, ZIP]",
-  supportEmail: "[support email]",
+  legalName: "Meridian Fragrance, LLC",
+  addressLine1: "123 Main Street",
+  addressLocality: "Houston, TX 77023",
+  supportEmail: "support@wearcoldsmoke.com",
 
-  // Confirmed by the owner, 2026-09-20. Not placeholders.
   returnWindowDays: 30,
   returnCondition: "unopened",
   governingState: "Texas",
