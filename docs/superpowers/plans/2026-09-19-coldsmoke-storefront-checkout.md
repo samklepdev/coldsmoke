@@ -742,18 +742,49 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "./schema";
 
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) {
-  throw new Error("DATABASE_URL is not set");
+function createDb() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error("DATABASE_URL is not set");
+  }
+
+  // postgres.js rather than the Neon HTTP driver: inventory reservation needs
+  // real multi-statement transactions, which the HTTP driver does not support.
+  const client = postgres(connectionString, { max: 10 });
+
+  return drizzle(client, { schema });
 }
 
-// postgres.js rather than the Neon HTTP driver: inventory reservation needs
-// real multi-statement transactions, which the HTTP driver does not support.
-const client = postgres(connectionString, { max: 10 });
-
-export const db = drizzle(client, { schema });
-export type Db = typeof db;
+export type Db = ReturnType<typeof createDb>;
 export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+let instance: Db | null = null;
+
+function getDb(): Db {
+  instance ??= createDb();
+  return instance;
+}
+
+/**
+ * The shared connection pool, created on first use rather than on import.
+ *
+ * `next build` imports the module graph of every route to collect its config,
+ * so anything read at module scope must be present at build time. Deferring
+ * the DATABASE_URL read to the first query keeps it a request-time value: the
+ * build needs no database, and a single image can be promoted between
+ * environments. A missing url still throws, just on first use rather than on
+ * import.
+ *
+ * The proxy exists so call sites stay `db.select()`. Methods are bound to the
+ * real instance so drizzle never sees the proxy as its `this`.
+ */
+export const db = new Proxy({} as Db, {
+  get(_target, prop) {
+    const target = getDb();
+    const value = Reflect.get(target, prop);
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+});
 ```
 
 - [ ] **Step 4: Create the migration runner**
@@ -2732,9 +2763,22 @@ import { PaymentIntentNotUpdatableError } from "./types";
 const TERMINAL_INTENT_STATUSES = new Set(["succeeded", "canceled", "processing"]);
 
 // This is the ONLY file permitted to import the stripe package.
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2026-08-26.dahlia",
-});
+let stripeClient: Stripe | null = null;
+
+/**
+ * Built on first use, not on import. The Stripe constructor throws on a falsy
+ * key, and `next build` imports this module's graph to collect route config —
+ * so constructing at module scope would make STRIPE_SECRET_KEY a build-time
+ * requirement. See the note on `db` in lib/db/client.ts.
+ */
+function getStripe(): Stripe {
+  if (!stripeClient) {
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
+    stripeClient = new Stripe(key, { apiVersion: "2026-08-26.dahlia" });
+  }
+  return stripeClient;
+}
 
 export class StripePayments implements PaymentsAdapter {
   async calculateTax({
@@ -2748,7 +2792,7 @@ export class StripePayments implements PaymentsAdapter {
       0,
     );
 
-    const calculation = await stripe.tax.calculations.create({
+    const calculation = await getStripe().tax.calculations.create({
       currency: "usd",
       customer_details: {
         address: {
@@ -2791,7 +2835,7 @@ export class StripePayments implements PaymentsAdapter {
 
     let intent: Stripe.PaymentIntent;
     if (paymentIntentId) {
-      const existing = await stripe.paymentIntents.retrieve(paymentIntentId);
+      const existing = await getStripe().paymentIntents.retrieve(paymentIntentId);
       if (TERMINAL_INTENT_STATUSES.has(existing.status)) {
         // Do NOT fall back to creating a replacement intent here. If the
         // original already succeeded, the customer has paid; quietly minting
@@ -2799,13 +2843,13 @@ export class StripePayments implements PaymentsAdapter {
         // as terminal, not retryable.
         throw new PaymentIntentNotUpdatableError(paymentIntentId, existing.status);
       }
-      intent = await stripe.paymentIntents.update(paymentIntentId, {
+      intent = await getStripe().paymentIntents.update(paymentIntentId, {
         amount: amountCents,
         receipt_email: email,
         metadata,
       });
     } else {
-      intent = await stripe.paymentIntents.create({
+      intent = await getStripe().paymentIntents.create({
         amount: amountCents,
         currency: "usd",
         receipt_email: email,
@@ -2825,7 +2869,7 @@ export class StripePayments implements PaymentsAdapter {
     amountCents,
     idempotencyKey,
   }: Parameters<PaymentsAdapter["refund"]>[0]) {
-    const refund = await stripe.refunds.create(
+    const refund = await getStripe().refunds.create(
       { payment_intent: paymentIntentId, amount: amountCents },
       { idempotencyKey },
     );
@@ -2833,7 +2877,7 @@ export class StripePayments implements PaymentsAdapter {
   }
 
   verifyWebhook(rawBody: string, signature: string): WebhookEvent {
-    const event = stripe.webhooks.constructEvent(
+    const event = getStripe().webhooks.constructEvent(
       rawBody,
       signature,
       process.env.STRIPE_WEBHOOK_SECRET!,
