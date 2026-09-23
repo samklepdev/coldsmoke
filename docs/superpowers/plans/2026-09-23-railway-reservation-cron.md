@@ -305,6 +305,25 @@ Create `railway.cron.json`:
 
 There is no `sleepApplication` key here on purpose. Serverless belongs to the web service; a cron container is started by the scheduler and must not be configured to sleep.
 
+- [ ] **Step 1b: Give the web service its migration hook**
+
+The Railway Postgres has no public proxy, so migrations cannot be run from a laptop — and giving it one would expose the database to the internet to save a keystroke. They run inside Railway's network instead, before each deployment goes live.
+
+Create `railway.json`:
+
+```json
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "preDeployCommand": "npm run db:migrate"
+  }
+}
+```
+
+This one *is* at the root, because the web service is meant to read it. It carries no `cronSchedule`, so there is nothing for the web service to inherit that would stop it serving. The cron service points at `railway.cron.json` and is unaffected.
+
+This is what Task 1's promotion of `tsx` and `dotenv` to `dependencies` was for: `db:migrate` is a tsx entrypoint that imports `dotenv`, and it now runs in a production container where devDependencies are absent.
+
 - [ ] **Step 2: Create the service**
 
 In the existing Railway project, add a new service from the same GitHub repository and branch. Name it `coldsmoke-cron`.
