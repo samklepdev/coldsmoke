@@ -23,6 +23,7 @@ const ROOT = path.resolve(__dirname, "../..");
 const PLANS = [
   "docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md",
   "docs/superpowers/plans/2026-09-20-admin-orders.md",
+  "docs/superpowers/plans/2026-09-23-railway-reservation-cron.md",
 ].map((p) => path.join(ROOT, p));
 
 // Joined with blank lines: the block parser is anchored on "Create `path`:"
