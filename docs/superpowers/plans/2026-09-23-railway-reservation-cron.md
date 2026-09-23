@@ -4,7 +4,7 @@
 
 **Goal:** Run `releaseExpiredReservations` every five minutes on Railway, so abandoned checkouts stop holding stock forever.
 
-**Architecture:** A CLI entrypoint runs the existing sweep once and exits. A separate Railway service owns the schedule and runs that entrypoint against Postgres directly — never over HTTP, because reaching the web service would wake it and defeat serverless. `vercel.json`, which declared a schedule nothing honoured, is deleted.
+**Architecture:** A CLI entrypoint runs the existing sweep once and exits. A separate Railway service owns the schedule and runs that entrypoint against Postgres directly — never over HTTP, which avoids a shared secret and a network hop, and stays correct if serverless is ever enabled on the storefront. `vercel.json`, which declared a schedule nothing honoured, is deleted.
 
 **Tech Stack:** TypeScript, tsx, drizzle-orm + postgres.js, Railway cron services.
 
@@ -13,7 +13,7 @@ Design: `docs/superpowers/specs/2026-09-23-railway-reservation-cron-design.md`
 ## Global Constraints
 
 - Cron cadence is `*/5 * * * *`. Five minutes is Railway's documented floor; shorter is not supported.
-- The job must never make an HTTP request to the web service, by public URL or private network. Railway wakes a service on traffic from either, and the web service runs with serverless enabled.
+- The job must never make an HTTP request to the web service, by public URL or private network. Railway wakes a *sleeping* service on traffic from either. Serverless is off on the storefront as of 2026-09-23, so this is currently a forward-looking constraint rather than an active one — but an HTTP cron would silently become a permanent-wake bug the day serverless is switched on, so the rule stands.
 - The job process must exit. Railway skips the next tick while a run is still alive.
 - `CRON_SECRET` is not used by the job. It authenticates the HTTP route only.
 - The `/api/cron/release-reservations` route is unchanged and stays as a manual ops trigger.
@@ -43,11 +43,14 @@ import { releaseExpiredReservations } from "./index";
  * Releases stock held by abandoned checkouts, and cancels the orders holding it.
  *
  * Run by a Railway cron service every five minutes. It queries Postgres
- * directly rather than calling /api/cron/release-reservations, because the web
- * service runs with serverless enabled: Railway wakes a service on traffic from
- * the internet or from another service over the private network, so a
- * five-minute cron reaching it over HTTP would keep the storefront permanently
- * awake and remove the reason serverless is on.
+ * directly rather than calling /api/cron/release-reservations: no shared
+ * secret to keep in step, no network hop, and no way to fail as a silent 401.
+ *
+ * It also keeps a door open. Railway wakes a sleeping service on traffic from
+ * the internet or from another service over the private network, so if
+ * serverless is ever switched on for the storefront, a five-minute cron
+ * calling it over HTTP would pin it permanently awake. Serverless is off as of
+ * 2026-09-23; this design does not depend on that staying true.
  *
  * The route still exists, and is still the way to force a sweep by hand.
  */
@@ -348,11 +351,11 @@ Trigger a deploy and watch the logs.
 
 Expected: `[release-reservations] cancelled N expired order(s)`, then the deployment shows a **zero exit code and stops**. A run that stays active is the failure mode from Task 1 Step 7 reaching production — Railway will skip every subsequent tick without reporting an error.
 
-- [ ] **Step 6: Verify the storefront still sleeps**
+- [ ] **Step 6: Verify the cron never touches the storefront**
 
-Leave the project idle for 20 minutes, then check the web service's status.
+Only meaningful once serverless is enabled on the web service — it is off as of 2026-09-23, so skip this until then. Leave the project idle for 20 minutes, then check the web service's status.
 
-Expected: asleep. If it is awake, something in the cron path is reaching it over HTTP, which removes the benefit serverless was enabled for.
+Expected: asleep. If it is awake, something in the cron path is reaching it over HTTP.
 
 - [ ] **Step 7: Verify the web service did not inherit the schedule**
 

@@ -5,11 +5,14 @@ import { releaseExpiredReservations } from "./index";
  * Releases stock held by abandoned checkouts, and cancels the orders holding it.
  *
  * Run by a Railway cron service every five minutes. It queries Postgres
- * directly rather than calling /api/cron/release-reservations, because the web
- * service runs with serverless enabled: Railway wakes a service on traffic from
- * the internet or from another service over the private network, so a
- * five-minute cron reaching it over HTTP would keep the storefront permanently
- * awake and remove the reason serverless is on.
+ * directly rather than calling /api/cron/release-reservations: no shared
+ * secret to keep in step, no network hop, and no way to fail as a silent 401.
+ *
+ * It also keeps a door open. Railway wakes a sleeping service on traffic from
+ * the internet or from another service over the private network, so if
+ * serverless is ever switched on for the storefront, a five-minute cron
+ * calling it over HTTP would pin it permanently awake. Serverless is off as of
+ * 2026-09-23; this design does not depend on that staying true.
  *
  * The route still exists, and is still the way to force a sweep by hand.
  */

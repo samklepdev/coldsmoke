@@ -48,8 +48,7 @@ This is a deployment gap, not a logic bug. `releaseExpiredReservations`
   query would suit a sleeping app and need no scheduler at all, but it puts writes on a
   hot read path and changes behaviour well beyond scheduling. Considered and rejected
   for this change; still open as a future simplification.
-- **An in-process `setInterval` via `instrumentation.ts`.** Ruled out by serverless —
-  see §3.
+- **An in-process `setInterval` via `instrumentation.ts`.** Ruled out in §3.
 - **Scheduling anything else.** No other job exists yet.
 
 ---
@@ -58,25 +57,33 @@ This is a deployment gap, not a logic bug. `releaseExpiredReservations`
 
 ### Why a separate service, and why not HTTP
 
-The web service runs with Railway's serverless (app-sleeping) mode on. Two documented
-Railway behaviours decide this design between them:
+The job connects to Postgres itself and never addresses the web service. The immediate
+reasons are plain: no shared secret to keep in step between two services, no network
+hop, and no failure mode where a misconfigured `CRON_SECRET` turns every sweep into a
+silent 401 that looks like "nothing to release".
+
+The second reason is about not building in a trap. Two documented Railway behaviours:
 
 > A service is woken when it receives traffic from the internet or from another service
 > in the same project through the private network.
 
 > Once a service stops sending packets it is considered inactive after 5 minutes.
 
-A 5-minute cron that reaches the app over HTTP — public URL or private network, it
-makes no difference — wakes it before it can ever go idle. The web service would never
-sleep again, which removes the entire reason serverless is enabled. The same argument
-rules out an external scheduler pointed at the public URL.
+A 5-minute cron reaching the app over HTTP — public URL or private network, it makes no
+difference — would wake it before it could ever go idle, so the service would never
+sleep. That rules out an external scheduler pointed at the public URL too.
 
-So the job connects to Postgres itself and never addresses the web service at all. The
-web service sleeps undisturbed; only the cron container and the database wake.
+**Correction (2026-09-23):** this design was originally justified by asserting the web
+service already had serverless enabled. It does not — `sleepApplication` is `false`.
+The HTTP-based alternatives would therefore have worked today. The constraint is real
+but forward-looking: an HTTP cron becomes a permanent-wake bug the moment serverless is
+switched on, and it would present as a cost increase with no error anywhere. Going
+direct costs nothing and removes the question.
 
-An in-process `setInterval` fails for the mirror-image reason: while the app is asleep
-no timer fires, so reservations would sit until the next customer happened to arrive —
-precisely when accurate stock matters most.
+An in-process `setInterval` is rejected on its own merits: it fires per replica, and if
+serverless is ever enabled it stops firing exactly while the app is idle — so
+reservations would sit until the next customer arrived, which is precisely when accurate
+stock matters most.
 
 | Unit | Responsibility |
 |---|---|
@@ -157,7 +164,7 @@ authorisation, as with `db:promote-admin`.
 | Job overruns 5 minutes | Railway skips the next tick rather than overlapping. Cold boot counts against that budget. Acceptable at current volume; worth watching, because skips are silent. |
 | Two runs somehow overlap | Safe. Each order is handled in its own transaction and the update is guarded by `eq(orders.status, "pending")`, so a second run matches zero rows. Already proven by the concurrency test at `inventory.test.ts:282`. |
 | Database unreachable | Job exits non-zero without touching state. |
-| Web service asleep | Irrelevant. The job never contacts it. |
+| Web service asleep or awake | Irrelevant. The job never contacts it. |
 
 ---
 
@@ -189,7 +196,7 @@ this work must be added to that list in the same commit that lands it.
 ## 8. Success criteria
 
 - Expired reservations are released in production without a customer request.
-- The web service still sleeps — enabling the cron does not keep it awake.
+- The cron never sends traffic to the web service, so enabling serverless later needs no rework.
 - The cron container exits on every run; no run is skipped for overrun.
 - `vercel.json` is gone, so no schedule is declared that nothing honours.
 - `npm test`, `lint`, and `build` green, with the plan in sync.

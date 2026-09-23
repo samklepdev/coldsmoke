@@ -157,8 +157,8 @@ Expired reservations are released by a second Railway service, configured by
 File; the file is deliberately not named `railway.json`, because the web service
 would read that from the repo root and inherit the cron schedule.
 
-The job queries Postgres directly and never calls the storefront, so the web
-service is free to sleep. `/api/cron/release-reservations` remains as a manual
+The job queries Postgres directly and never calls the storefront — no shared
+secret, and the web service is free to sleep if serverless is ever enabled. `/api/cron/release-reservations` remains as a manual
 trigger and refuses to run if `CRON_SECRET` is unset.
 
 ## Plans
