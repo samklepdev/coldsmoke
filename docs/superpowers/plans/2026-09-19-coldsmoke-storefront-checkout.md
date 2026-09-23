@@ -5975,7 +5975,6 @@ git commit -m "feat: checkout with embedded Stripe Elements"
 
 **Files:**
 - Create: `src/app/api/stripe/webhook/route.ts`, `src/app/api/cron/release-reservations/route.ts`
-- Create: `vercel.json`
 
 **Interfaces:**
 - Consumes: `getPayments`, `markOrderPaid`, `findOrderById`, `sendOrderConfirmation`, `releaseExpiredReservations`
@@ -6192,18 +6191,11 @@ export async function GET(request: Request) {
 
 - [ ] **Step 3: Schedule the cron**
 
-Create `vercel.json`:
-
-```json
-{
-  "crons": [
-    {
-      "path": "/api/cron/release-reservations",
-      "schedule": "*/5 * * * *"
-    }
-  ]
-}
-```
+Superseded. `vercel.json` was deleted on 2026-09-23: the store deploys to
+Railway, which ignores that file, so the schedule it declared never ran and
+expired reservations were never released. The schedule now lives in a Railway
+cron service running `npm run cron:release-reservations`. See
+`docs/superpowers/plans/2026-09-23-railway-reservation-cron.md`.
 
 - [ ] **Step 4: Test the webhook against the local server**
 
@@ -6231,7 +6223,7 @@ Expected: 200 again, and `on_hand` is unchanged from the previous step.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/app/api vercel.json
+git add src/app/api
 git commit -m "feat: Stripe webhook with idempotency and reservation sweep"
 ```
 
@@ -7022,10 +7014,12 @@ Put the printed `whsec_...` in `.env` as `STRIPE_WEBHOOK_SECRET`.
 
 ## Deployment
 
-Vercel + Neon. Set every variable from `.env.example` in the project settings,
+Railway. Set every variable from `.env.example` in the service settings, and
 add the production webhook endpoint in the Stripe dashboard pointing at
-`/api/stripe/webhook`, and set `CRON_SECRET` to match the cron configured in
-`vercel.json`.
+`/api/stripe/webhook`. `NEXT_PUBLIC_*` variables must be set before the build,
+because Next.js inlines them into the client bundle at build time. Expired
+reservations are swept by a separate Railway cron service — see
+`docs/superpowers/plans/2026-09-23-railway-reservation-cron.md`.
 
 ## Plans
 
