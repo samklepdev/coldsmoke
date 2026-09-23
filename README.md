@@ -143,10 +143,19 @@ replayed event changes nothing. Four things are still worth knowing.
 
 ## Deployment
 
-Vercel + Neon. Set every variable from `.env.example` in the project settings,
-add the production webhook endpoint in the Stripe dashboard pointing at
-`/api/stripe/webhook`, and set `CRON_SECRET` to match the cron configured in
-`vercel.json`. The cron route refuses to run if `CRON_SECRET` is unset.
+Railway. Set every variable from `.env.example` in the service settings, and add
+the production webhook endpoint in the Stripe dashboard pointing at
+`/api/stripe/webhook`.
+
+`NEXT_PUBLIC_*` variables must be present before the build — Next.js inlines
+them into the client bundle, so a value added afterwards has no effect until the
+next deploy. Everything else is read at request time.
+
+Expired reservations are released by a second Railway service running
+`npm run cron:release-reservations` on a `*/5 * * * *` cron schedule. It queries
+Postgres directly and never calls the storefront, so the web service is free to
+sleep. `/api/cron/release-reservations` remains as a manual trigger and refuses
+to run if `CRON_SECRET` is unset.
 
 ## Plans
 
