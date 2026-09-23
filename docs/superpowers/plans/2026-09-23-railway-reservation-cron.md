@@ -273,39 +273,55 @@ git commit -m "chore: delete vercel.json and document Railway deployment"
 
 ### Task 3: Configure Railway
 
-**Files:** none. This task is dashboard work, and cannot be done from the repository.
+**Files:**
+- Create: `railway.cron.json`
 
 **Interfaces:**
 - Consumes: the `cron:release-reservations` script from Task 1.
 - Produces: a running schedule.
 
+The start command and schedule live in a config file rather than in dashboard fields, so they are reviewable and survive the service being recreated. The Railway CLI cannot set a cron schedule — it is a dashboard field or a config file, nothing else — so this is the only way to keep the schedule in version control.
+
 Do this only after Task 1 is deployed, so the script exists on the branch Railway builds.
 
-- [ ] **Step 1: Create the service**
+- [ ] **Step 1: Write the config**
+
+The filename matters. It must **not** be `railway.json`: Railway reads that from the repo root by default, so the web service would pick it up and inherit `cronSchedule`, turning the storefront into a job that runs once and exits.
+
+Create `railway.cron.json`:
+
+```json
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "startCommand": "npm run cron:release-reservations",
+    "cronSchedule": "*/5 * * * *",
+    "restartPolicyType": "NEVER"
+  }
+}
+```
+
+`restartPolicyType: "NEVER"` is not a default worth accepting blindly. Under `ALWAYS` or `ON_FAILURE`, a job that keeps failing would be restarted indefinitely and stay in the running state — and Railway skips a tick whenever the previous run is still alive, so a single persistent failure would silently block every future execution. With `NEVER`, a failed run simply fails, and the next tick retries from clean. Sweeps are independent, so nothing is lost by skipping one.
+
+There is no `sleepApplication` key here on purpose. Serverless belongs to the web service; a cron container is started by the scheduler and must not be configured to sleep.
+
+- [ ] **Step 2: Create the service**
 
 In the existing Railway project, add a new service from the same GitHub repository and branch. Name it `coldsmoke-cron`.
 
-- [ ] **Step 2: Point it at the database**
+- [ ] **Step 3: Point it at the config file**
+
+Settings → Config-as-code → Railway Config File:
+
+```
+/railway.cron.json
+```
+
+The path is absolute from the repository root, independent of any Root Directory setting. This is the field that keeps the schedule off the web service. Leave the build command at its default — the service will build a Next.js app it never serves, about 35 seconds of waste per deploy, which is cheaper than maintaining a per-service divergence.
+
+- [ ] **Step 4: Point it at the database**
 
 In the new service's **Variables**, add `DATABASE_URL` as a reference to the same Postgres service the web service uses. Add nothing else — in particular not `CRON_SECRET`, which this path does not use.
-
-- [ ] **Step 3: Set the start command**
-
-Settings → Deploy → Start Command:
-
-```
-npm run cron:release-reservations
-```
-
-Leave the build command at its default. The service will build a Next.js app it never serves — about 35 seconds of waste per deploy, which is cheaper than maintaining a per-service divergence.
-
-- [ ] **Step 4: Set the schedule**
-
-Settings → Deploy → Cron Schedule:
-
-```
-*/5 * * * *
-```
 
 - [ ] **Step 5: Verify one run**
 
@@ -318,6 +334,12 @@ Expected: `[release-reservations] cancelled N expired order(s)`, then the deploy
 Leave the project idle for 20 minutes, then check the web service's status.
 
 Expected: asleep. If it is awake, something in the cron path is reaching it over HTTP, which removes the benefit serverless was enabled for.
+
+- [ ] **Step 7: Verify the web service did not inherit the schedule**
+
+Check the web service's Settings → Deploy. Expected: **no** cron schedule, and a start command of `npm start`.
+
+This cannot happen while the config file is named `railway.cron.json` and only the cron service points at it, but it is worth one look — the failure is silent and total. A storefront with a cron schedule runs once, exits, and serves nothing.
 
 ---
 
