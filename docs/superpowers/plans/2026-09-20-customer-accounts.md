@@ -3775,6 +3775,7 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { requireSessionUser } from "@/lib/auth/session";
 import { createAddress, deleteAddress, setDefaultAddress } from "@/lib/addresses";
+import { US_STATE_CODES } from "@/lib/addresses/states";
 
 const schema = z.object({
   label: z
@@ -3790,11 +3791,12 @@ const schema = z.object({
     .optional()
     .transform((v) => v || null),
   city: z.string().trim().min(1, "Enter a city."),
-  state: z
-    .string()
-    .trim()
-    .regex(/^[A-Za-z]{2}$/, "Use a two-letter state code.")
-    .transform((v) => v.toUpperCase()),
+  // Same list the dropdown renders from, so the form and the validator cannot
+  // disagree about what a state is. See lib/addresses/states.ts.
+  state: z.preprocess(
+    (v) => (typeof v === "string" ? v.trim().toUpperCase() : v),
+    z.enum(US_STATE_CODES, { message: "Choose a state." }),
+  ),
   postalCode: z.string().trim().regex(/^\d{5}(-\d{4})?$/, "Enter a valid ZIP code."),
 });
 
@@ -3931,6 +3933,7 @@ import { useActionState } from "react";
 import { saveAddressAction, type AddressState } from "./actions";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
+import { StateSelect } from "@/components/ui/StateSelect";
 import styles from "./page.module.css";
 
 export function AddressForm() {
@@ -3990,11 +3993,7 @@ export function AddressForm() {
         error={errorFor("city")}
       />
       <div className={styles.row}>
-        <Field
-          label="State"
-          name="state"
-          autoComplete="address-level1"
-          required
+        <StateSelect
           defaultValue={valueFor("state")}
           error={errorFor("state")}
         />

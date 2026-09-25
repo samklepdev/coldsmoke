@@ -122,7 +122,7 @@ describe("startCheckoutAction — address validation", () => {
     if (state.status !== "error") throw new Error("expected an error state");
     expect(state.fieldErrors).toEqual({
       email: "Enter a valid email address.",
-      state: "Use a two-letter state code.",
+      state: "Choose a state.",
       postalCode: "Enter a valid ZIP code.",
     });
     expect(await ctx.db.select().from(orders)).toHaveLength(0);
@@ -132,7 +132,17 @@ describe("startCheckoutAction — address validation", () => {
     const state = await start({ state: "12" });
 
     if (state.status !== "error") throw new Error("expected an error state");
-    expect(state.fieldErrors?.state).toBe("Use a two-letter state code.");
+    expect(state.fieldErrors?.state).toBe("Choose a state.");
+  });
+
+  it("rejects two letters that are not a state", async () => {
+    // "XX" passed the old /^[A-Za-z]{2}$/ check and went on to Stripe Tax as
+    // a canonical state code. This is the hole the enum closes.
+    const state = await start({ state: "XX" });
+
+    if (state.status !== "error") throw new Error("expected an error state");
+    expect(state.fieldErrors?.state).toBe("Choose a state.");
+    expect(await ctx.db.select().from(orders)).toHaveLength(0);
   });
 
   it("normalises a lowercase state to its canonical uppercase code", async () => {

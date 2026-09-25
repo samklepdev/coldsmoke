@@ -11,6 +11,7 @@ import { PENDING_ORDER_COOKIE } from "@/lib/cookies";
 import { getActiveDiscount } from "../actions";
 import { getSessionUser } from "@/lib/auth/session";
 import type { Address } from "@/lib/db/schema";
+import { US_STATE_CODES } from "@/lib/addresses/states";
 
 const addressSchema = z.object({
   email: z.email("Enter a valid email address."),
@@ -24,13 +25,14 @@ const addressSchema = z.object({
     .optional()
     .transform((value) => value || undefined),
   city: z.string().trim().min(1, "Enter a city."),
-  // Letters only, and normalised: Stripe Tax expects a canonical state code,
-  // and a plain length check would accept "12" or pass "tx" through as typed.
-  state: z
-    .string()
-    .trim()
-    .regex(/^[A-Za-z]{2}$/, "Use a two-letter state code.")
-    .transform((value) => value.toUpperCase()),
+  // The dropdown can only submit a canonical code, so trim/uppercase is now
+  // defence against a hand-written POST, not against a customer typing "mt".
+  // The enum is what closes the real hole: /^[A-Za-z]{2}$/ accepted "XX" and
+  // handed it to Stripe Tax, which uses it to decide what tax to charge.
+  state: z.preprocess(
+    (v) => (typeof v === "string" ? v.trim().toUpperCase() : v),
+    z.enum(US_STATE_CODES, { message: "Choose a state." }),
+  ),
   postalCode: z
     .string()
     .trim()

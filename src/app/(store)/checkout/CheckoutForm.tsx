@@ -11,6 +11,7 @@ import {
 } from "@stripe/react-stripe-js";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
+import { StateSelect } from "@/components/ui/StateSelect";
 import { formatCents } from "@/lib/money";
 import { startCheckoutAction, type CheckoutState } from "./actions";
 import styles from "./page.module.css";
@@ -106,14 +107,7 @@ export function CheckoutForm() {
         required
         error={fieldErrors.city}
       />
-      <Field
-        label="State"
-        name="state"
-        autoComplete="address-level1"
-        maxLength={2}
-        required
-        error={fieldErrors.state}
-      />
+      <StateSelect error={fieldErrors.state} />
       <Field
         label="ZIP"
         name="postalCode"
