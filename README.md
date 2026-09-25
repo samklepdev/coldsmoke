@@ -151,11 +151,13 @@ the production webhook endpoint in the Stripe dashboard pointing at
 them into the client bundle, so a value added afterwards has no effect until the
 next deploy. Everything else is read at request time.
 
-Expired reservations are released by a second Railway service, configured by
-`railway.cron.json` — start command `npm run cron:release-reservations`, schedule
-`*/5 * * * *`. That service points at the file via Settings → Railway Config
-File; the file is deliberately not named `railway.json`, because the web service
-would read that from the repo root and inherit the cron schedule.
+Railway infrastructure is declared in `.railway/railway.ts` — both services,
+the Postgres database, the migration hook, and the cron schedule. Run
+`railway config plan` before `railway config apply`, and stop if the plan
+reports anything to destroy: apply deletes resources the file omits.
+
+Expired reservations are released by a second Railway service, `coldsmoke-cron`,
+running `npm run cron:release-reservations` on a `*/5 * * * *` schedule.
 
 The job queries Postgres directly and never calls the storefront — no shared
 secret, and the web service is free to sleep if serverless is ever enabled. `/api/cron/release-reservations` remains as a manual
