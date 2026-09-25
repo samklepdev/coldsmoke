@@ -4,6 +4,7 @@ import { useActionState } from "react";
 import { saveAddressAction, type AddressState } from "./actions";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
+import { StateSelect } from "@/components/ui/StateSelect";
 import styles from "./page.module.css";
 
 export function AddressForm() {
@@ -63,11 +64,7 @@ export function AddressForm() {
         error={errorFor("city")}
       />
       <div className={styles.row}>
-        <Field
-          label="State"
-          name="state"
-          autoComplete="address-level1"
-          required
+        <StateSelect
           defaultValue={valueFor("state")}
           error={errorFor("state")}
         />
