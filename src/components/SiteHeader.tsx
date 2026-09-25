@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SignOutButton } from "./SignOutButton";
 import { Wordmark } from "./ui/Wordmark";
 import styles from "./SiteHeader.module.css";
 
@@ -22,6 +23,7 @@ export function SiteHeader({
         <Link href={signedIn ? "/account/orders" : "/sign-in"}>
           {signedIn ? "Account" : "Sign in"}
         </Link>
+        {signedIn ? <SignOutButton /> : null}
       </nav>
 
       <Link href="/cart" className={styles.cart}>

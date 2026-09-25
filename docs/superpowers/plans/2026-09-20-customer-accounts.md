@@ -856,6 +856,7 @@ Create `src/app/(store)/account/layout.tsx`:
 ```tsx
 import Link from "next/link";
 import { requireSessionUser } from "@/lib/auth/session";
+import { SignOutButton } from "@/components/SignOutButton";
 import { ContentPage } from "@/components/content/ContentPage";
 import styles from "./account.module.css";
 
@@ -877,6 +878,7 @@ export default async function AccountLayout({
       <nav className={styles.tabs} aria-label="Account">
         <Link href="/account/orders">Orders</Link>
         <Link href="/account/addresses">Addresses</Link>
+        <SignOutButton />
       </nav>
       {children}
     </ContentPage>
@@ -901,6 +903,23 @@ Create `src/app/(store)/account/account.module.css`:
   text-transform: uppercase;
   color: var(--text-dim);
   text-decoration: none;
+}
+
+/* See the note in SiteHeader.module.css: the form is `display: contents` and
+   the button is reset so sign-out reads as another tab. */
+.tabs form {
+  display: contents;
+}
+
+.tabs button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.68rem;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
 }
 ```
 
@@ -1695,7 +1714,6 @@ Create `src/app/(store)/sign-in/actions.ts`:
 
 import { z } from "zod";
 import { headers } from "next/headers";
-import { redirect } from "next/navigation";
 import { APIError } from "better-auth/api";
 import { auth } from "@/lib/auth";
 import { mergeGuestCart } from "@/lib/cart/merge";
@@ -1749,11 +1767,6 @@ export async function signInAction(
   await mergeGuestCart(userId);
 
   return { status: "ok" };
-}
-
-export async function signOutAction(): Promise<void> {
-  await auth.api.signOut({ headers: await headers() });
-  redirect("/");
 }
 ```
 

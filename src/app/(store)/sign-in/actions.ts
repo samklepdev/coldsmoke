@@ -2,7 +2,6 @@
 
 import { z } from "zod";
 import { headers } from "next/headers";
-import { redirect } from "next/navigation";
 import { APIError } from "better-auth/api";
 import { auth } from "@/lib/auth";
 import { mergeGuestCart } from "@/lib/cart/merge";
@@ -56,9 +55,4 @@ export async function signInAction(
   await mergeGuestCart(userId);
 
   return { status: "ok" };
-}
-
-export async function signOutAction(): Promise<void> {
-  await auth.api.signOut({ headers: await headers() });
-  redirect("/");
 }
