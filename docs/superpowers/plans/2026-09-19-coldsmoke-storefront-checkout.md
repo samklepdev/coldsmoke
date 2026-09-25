@@ -5541,6 +5541,7 @@ import { PENDING_ORDER_COOKIE } from "@/lib/cookies";
 import { getActiveDiscount } from "../actions";
 import { getSessionUser } from "@/lib/auth/session";
 import type { Address } from "@/lib/db/schema";
+import { US_STATE_CODES } from "@/lib/addresses/states";
 
 const addressSchema = z.object({
   email: z.email("Enter a valid email address."),
@@ -5554,13 +5555,14 @@ const addressSchema = z.object({
     .optional()
     .transform((value) => value || undefined),
   city: z.string().trim().min(1, "Enter a city."),
-  // Letters only, and normalised: Stripe Tax expects a canonical state code,
-  // and a plain length check would accept "12" or pass "tx" through as typed.
-  state: z
-    .string()
-    .trim()
-    .regex(/^[A-Za-z]{2}$/, "Use a two-letter state code.")
-    .transform((value) => value.toUpperCase()),
+  // The dropdown can only submit a canonical code, so trim/uppercase is now
+  // defence against a hand-written POST, not against a customer typing "mt".
+  // The enum is what closes the real hole: /^[A-Za-z]{2}$/ accepted "XX" and
+  // handed it to Stripe Tax, which uses it to decide what tax to charge.
+  state: z.preprocess(
+    (v) => (typeof v === "string" ? v.trim().toUpperCase() : v),
+    z.enum(US_STATE_CODES, { message: "Choose a state." }),
+  ),
   postalCode: z
     .string()
     .trim()
@@ -5702,6 +5704,7 @@ import {
 } from "@stripe/react-stripe-js";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
+import { StateSelect } from "@/components/ui/StateSelect";
 import { formatCents } from "@/lib/money";
 import { startCheckoutAction, type CheckoutState } from "./actions";
 import styles from "./page.module.css";
@@ -5797,14 +5800,7 @@ export function CheckoutForm() {
         required
         error={fieldErrors.city}
       />
-      <Field
-        label="State"
-        name="state"
-        autoComplete="address-level1"
-        maxLength={2}
-        required
-        error={fieldErrors.state}
-      />
+      <StateSelect error={fieldErrors.state} />
       <Field
         label="ZIP"
         name="postalCode"
@@ -6757,9 +6753,19 @@ const ADDRESS = {
   "Full name": "Test Buyer",
   Address: "1 Powder Lane",
   City: "Bozeman",
-  State: "MT",
   ZIP: "59715",
 };
+
+/**
+ * State is a <select>, and Playwright's fill() throws on one, so it cannot
+ * ride along in the ADDRESS loop with the text fields.
+ */
+async function fillAddress(page: import("@playwright/test").Page) {
+  for (const [label, value] of Object.entries(ADDRESS)) {
+    await page.getByLabel(label, { exact: true }).fill(value);
+  }
+  await page.getByLabel("State", { exact: true }).selectOption("MT");
+}
 
 async function addBottleToCart(page: import("@playwright/test").Page) {
   await page.goto("/shop");
@@ -6782,9 +6788,7 @@ test("a guest can fill a cart and reach the checkout form", async ({ page }) => 
   await page.getByRole("link", { name: "Checkout" }).click();
   await expect(page).toHaveURL(/\/checkout/);
 
-  for (const [label, value] of Object.entries(ADDRESS)) {
-    await page.getByLabel(label, { exact: true }).fill(value);
-  }
+  await fillAddress(page);
 
   await expect(
     page.getByRole("button", { name: "Continue to payment" }),
@@ -6867,9 +6871,7 @@ test("a guest can buy a bottle", async ({ page }) => {
   await page.getByRole("link", { name: "Checkout" }).click();
   await expect(page).toHaveURL(/\/checkout/);
 
-  for (const [label, value] of Object.entries(ADDRESS)) {
-    await page.getByLabel(label, { exact: true }).fill(value);
-  }
+  await fillAddress(page);
 
   await page.getByRole("button", { name: "Continue to payment" }).click();
 
