@@ -1,0 +1,72 @@
+name: deploy-failure
+
+# Railway reports deployments to GitHub, including failures -- verified against
+# the two failed attempts at commit 65a9373, which recorded `failure` states.
+# So this needs no Railway API token and no polling: GitHub delivers the event.
+#
+# Nothing else announces a failed deploy. Railway correctly keeps the previous
+# version serving, which is the right behaviour and also why a failure is easy
+# to miss entirely -- the site looks fine.
+on:
+  deployment_status:
+  workflow_dispatch: # exercises the alert path without breaking a real deploy
+
+jobs:
+  alert:
+    # Skipped runs send no notification, so the other states stay silent.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.deployment_status.state == 'failure' ||
+      github.event.deployment_status.state == 'error'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SITE_URL: ${{ vars.SITE_URL }}
+      STATE: ${{ github.event.deployment_status.state }}
+      TARGET: ${{ github.event.deployment_status.target_url }}
+      ENVIRONMENT: ${{ github.event.deployment.environment }}
+
+    steps:
+      # The single most useful fact when a deploy fails: whether customers are
+      # affected. Railway holds the previous version, so a failed deploy
+      # usually means "the new code did not ship", not "the store is down" --
+      # a completely different urgency. Answer it in the notification rather
+      # than making someone go and check.
+      - name: Is the store still serving?
+        id: serving
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                   --max-time 30 --retry 2 --retry-delay 5 "$SITE_URL/" || echo 000)
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "GET / -> $code"
+
+      - name: Report
+        run: |
+          serving='${{ steps.serving.outputs.code }}'
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual test of the alert path. Storefront returned $serving."
+            echo "No real deployment failure. Exiting 0."
+            exit 0
+          fi
+
+          {
+            echo "### Railway deployment $STATE"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| commit | \`${{ github.sha }}\` |"
+            echo "| environment | $ENVIRONMENT |"
+            echo "| storefront | HTTP $serving |"
+            echo "| logs | $TARGET |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$serving" = "200" ]; then
+            echo "::error::Deploy failed, but the storefront is still serving \
+          (HTTP 200) -- Railway kept the previous version. The new commit did \
+          not ship. Not customer-facing."
+          else
+            echo "::error::Deploy failed AND the storefront returned \
+          HTTP $serving. This is customer-facing."
+          fi
+          exit 1
