@@ -1,4 +1,5 @@
 import {
+  bucket,
   defineRailway,
   github,
   postgres,
@@ -25,6 +26,14 @@ import {
 export default defineRailway(() => {
   const db = postgres("Postgres");
 
+  /**
+   * Created by `railway postgres pitr enable`, not by this file. It is
+   * declared here only so apply does not delete it: an undeclared resource is
+   * reconciled away, and deleting this one would destroy the continuous
+   * backups of the production database.
+   */
+  const pitrBackups = bucket("Postgres-PITR", { region: "sjc" });
+
   const web = service("extraordinary-beauty", {
     source: github("samklepdev/coldsmoke", { branch: "main" }),
 
@@ -44,6 +53,7 @@ export default defineRailway(() => {
       DATABASE_URL: db.env.DATABASE_URL,
       BETTER_AUTH_SECRET: preserve(),
       BETTER_AUTH_URL: preserve(),
+      CONTACT_IP_SALT: preserve(),
       CRON_SECRET: preserve(),
       EMAIL_FROM: preserve(),
       NEXT_PUBLIC_SITE_URL: preserve(),
@@ -77,6 +87,6 @@ export default defineRailway(() => {
   });
 
   return project("bubbly-patience", {
-    resources: [db, web, cron],
+    resources: [db, pitrBackups, web, cron],
   });
 });
