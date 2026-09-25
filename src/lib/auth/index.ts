@@ -56,6 +56,11 @@ export const auth = betterAuth({
         "::1/128",
         "fd00::/8",
       ],
+
+      // Stated rather than inherited, like every other option here. Turning it
+      // on would return null from getIP and put us straight back to one shared
+      // rate-limit bucket -- the exact failure the trustedProxies above fix.
+      disableIpTracking: false,
     },
   },
 
