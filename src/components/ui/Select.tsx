@@ -2,6 +2,7 @@
 
 import { useId, type SelectHTMLAttributes } from "react";
 import styles from "./Field.module.css";
+import selectStyles from "./Select.module.css";
 
 type Props = SelectHTMLAttributes<HTMLSelectElement> & {
   label: string;
@@ -14,7 +15,8 @@ type Props = SelectHTMLAttributes<HTMLSelectElement> & {
  * It imports Field's stylesheet rather than owning a copy: an input and a
  * select sit side by side in the address row, and two stylesheets would drift
  * -- one border colour updated, the other forgotten. The native chevron is
- * kept, so there is nothing to style around.
+ * kept; Select.module.css carries the one rule an input does not need, which
+ * is room on the right so the arrow is not crowded against the border.
  */
 export function Select({ label, error, className, children, ...rest }: Props) {
   const id = useId();
@@ -27,7 +29,12 @@ export function Select({ label, error, className, children, ...rest }: Props) {
       </label>
       <select
         id={id}
-        className={[styles.input, error && styles.invalid, className]
+        className={[
+          styles.input,
+          selectStyles.select,
+          error && styles.invalid,
+          className,
+        ]
           .filter(Boolean)
           .join(" ")}
         aria-invalid={error ? true : undefined}

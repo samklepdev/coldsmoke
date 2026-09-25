@@ -24,7 +24,9 @@
 ## Deviations from the spec (deliberate, already reasoned)
 
 1. **No `isStateCode` guard.** The spec's §3 sketch exported one, but `z.enum(US_STATE_CODES)` does the only validation there is, leaving the guard with no caller. YAGNI — it is not written.
-2. **No `Select.module.css`.** The spec proposed a stylesheet that `composes` from `Field.module.css`. `Select.tsx` imports `Field.module.css` directly instead, which achieves the same stated goal — one border definition that cannot drift — with one fewer file and no dependence on stylesheet ordering between two equal-specificity classes.
+2. **`Select.module.css` holds one rule, not a copy of Field's.** The spec proposed a stylesheet that `composes` every class from `Field.module.css`. `Select.tsx` imports `Field.module.css` directly instead, so there is still exactly one definition of the border, focus ring and error colour. `Select.module.css` exists only for the single rule an input genuinely does not need — right-hand room for the native chevron — and uses `select.select` element+class specificity rather than `composes`, because `.input` sets `padding` as a shorthand and an equal-specificity class would win or lose on stylesheet order.
+
+   (Added after Task 2's review, in response to the chevron sitting against the control's right edge in the running app. Task 2's committed `Select.tsx` predates it; Step 1b and the updated Step 1 block below are the current state.)
 
 Everything else follows the spec as approved.
 
@@ -202,6 +204,7 @@ git commit -m "feat: add the US state list that both forms and both validators s
 
 **Files:**
 - Create: `src/components/ui/Select.tsx`
+- Create: `src/components/ui/Select.module.css`
 - Create: `src/components/ui/StateSelect.tsx`
 
 **Interfaces:**
@@ -219,6 +222,7 @@ Create `src/components/ui/Select.tsx`:
 
 import { useId, type SelectHTMLAttributes } from "react";
 import styles from "./Field.module.css";
+import selectStyles from "./Select.module.css";
 
 type Props = SelectHTMLAttributes<HTMLSelectElement> & {
   label: string;
@@ -231,7 +235,8 @@ type Props = SelectHTMLAttributes<HTMLSelectElement> & {
  * It imports Field's stylesheet rather than owning a copy: an input and a
  * select sit side by side in the address row, and two stylesheets would drift
  * -- one border colour updated, the other forgotten. The native chevron is
- * kept, so there is nothing to style around.
+ * kept; Select.module.css carries the one rule an input does not need, which
+ * is room on the right so the arrow is not crowded against the border.
  */
 export function Select({ label, error, className, children, ...rest }: Props) {
   const id = useId();
@@ -244,7 +249,12 @@ export function Select({ label, error, className, children, ...rest }: Props) {
       </label>
       <select
         id={id}
-        className={[styles.input, error && styles.invalid, className]
+        className={[
+          styles.input,
+          selectStyles.select,
+          error && styles.invalid,
+          className,
+        ]
           .filter(Boolean)
           .join(" ")}
         aria-invalid={error ? true : undefined}
@@ -262,6 +272,30 @@ export function Select({ label, error, className, children, ...rest }: Props) {
   );
 }
 ```
+
+- [ ] **Step 1b: Create the select's one stylesheet rule**
+
+Create `src/components/ui/Select.module.css`:
+
+```css
+/*
+ * The one rule a select needs that an input does not.
+ *
+ * `Select` borrows `.input` from Field.module.css so the two controls cannot
+ * drift apart, but that rule's `padding: 0.8rem 0.9rem` was chosen to sit a
+ * text cursor off the border. The browser insets the native chevron by the
+ * same 0.9rem, which leaves the arrow crowded against the right edge.
+ *
+ * `select.select` rather than `.select`: `.input` sets `padding` as a
+ * shorthand, so an equal-specificity class would win or lose on stylesheet
+ * order. Adding the element name makes this deterministic.
+ */
+select.select {
+  padding-right: 2.1rem;
+}
+```
+
+Verified in Chromium against the running app: the select reports `padding-right: 33.6px` against the ZIP input's `14.4px`, with both keeping `padding-left: 14.4px` so the row stays flush.
 
 - [ ] **Step 2: Create the StateSelect control**
 
@@ -680,9 +714,20 @@ Append to `src/test/plan-drift.test.ts`:
 Run: `npx vitest run src/test/plan-drift.test.ts`
 Expected: PASS.
 
-If a `matches the plan byte for byte` case fails, the shipped file and this plan's `Create` block have diverged. **Update this plan's code block to match the shipped file** — that is what the guard is for. Do not weaken the test, and do not edit the source back unless the source is the thing that is wrong.
+**The guard is already red before you start this task, and reconciling it is the substance of this task — not a formality.** Tasks 3 and 4 edited four files that *older* plans describe with full `Create` blocks, so each is a byte-for-byte mismatch:
 
-This step will also flag `CheckoutForm.tsx` or `AddressForm.tsx` drift against the *older* plans (`2026-09-19-coldsmoke-storefront-checkout.md`, `2026-09-20-customer-accounts.md`), since Tasks 3 and 4 edited files those plans describe. Those are `Append`-style subsequence checks, so they only fail if a line they assert was removed. If one does fail, update that plan's block to the shipped code in this same commit.
+| Drifted file | Plan holding its `Create` block |
+|---|---|
+| `src/app/(store)/checkout/actions.ts` | `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md` |
+| `src/app/(store)/checkout/CheckoutForm.tsx` | `docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md` |
+| `e2e/checkout.spec.ts` | declared in both `2026-09-19-coldsmoke-storefront-checkout.md` and `2026-09-20-cart-quantity-stepper.md` — find which block the guard is actually comparing and fix that one |
+| `src/app/(store)/account/addresses/actions.ts` | `docs/superpowers/plans/2026-09-20-customer-accounts.md` |
+
+An earlier draft of this plan called these "`Append`-style subsequence checks". That was wrong: they are full `Create` blocks compared byte for byte, so the whole block must be brought up to date, not just a line or two.
+
+For each: **update the older plan's code block to match the shipped file exactly.** Copy the shipped file's current contents into the block. Do not weaken or skip the test, do not mark blocks `plan-drift: partial` to dodge the comparison, and do not edit the source back — the source is correct; the older plan documents are the stale side.
+
+Run the guard again after each fix. When it passes, every `matches the plan byte for byte` case is green, including the four `Create` blocks this plan itself declares (`states.ts`, `states.test.ts`, `Select.tsx`, `StateSelect.tsx`) and the new `account/addresses/actions.test.ts`.
 
 - [ ] **Step 3: Run everything**
 

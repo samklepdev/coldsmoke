@@ -1,0 +1,15 @@
+/*
+ * The one rule a select needs that an input does not.
+ *
+ * `Select` borrows `.input` from Field.module.css so the two controls cannot
+ * drift apart, but that rule's `padding: 0.8rem 0.9rem` was chosen to sit a
+ * text cursor off the border. The browser insets the native chevron by the
+ * same 0.9rem, which leaves the arrow crowded against the right edge.
+ *
+ * `select.select` rather than `.select`: `.input` sets `padding` as a
+ * shorthand, so an equal-specificity class would win or lose on stylesheet
+ * order. Adding the element name makes this deterministic.
+ */
+select.select {
+  padding-right: 2.1rem;
+}
