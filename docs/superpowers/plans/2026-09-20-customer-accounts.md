@@ -119,6 +119,7 @@ vi.mock("./client", () => ({
 const {
   verificationEmail,
   passwordResetEmail,
+  existingAccountEmail,
   sendVerificationEmail,
   sendPasswordResetEmail,
 } = await import("./auth");
@@ -151,6 +152,23 @@ describe("email bodies", () => {
     // A password-reset mail that arrives unrequested is the one signal a
     // customer gets that someone is trying to get into their account.
     expect(passwordResetEmail(URL).text.toLowerCase()).toContain("did not request");
+  });
+
+  it("puts the sign-in link in the existing-account body", () => {
+    expect(existingAccountEmail(URL).text).toContain(URL);
+  });
+
+  it("says what the existing-account email is for", () => {
+    expect(existingAccountEmail(URL).subject).toBe(
+      "You already have a Coldsmoke account",
+    );
+  });
+
+  it("does not confirm the account to a stranger who guessed the address", () => {
+    // This mail goes to the real owner, not to whoever submitted the form, so
+    // it may say the account exists. What it must never do is imply the
+    // sign-up attempt revealed anything.
+    expect(existingAccountEmail(URL).text).toContain("Nobody");
   });
 });
 
@@ -280,6 +298,30 @@ async function send(args: {
   }
 }
 
+export function existingAccountEmail(url: string): { subject: string; text: string } {
+  return {
+    subject: "You already have a Coldsmoke account",
+    text: [
+      "Someone -- probably you -- just tried to create an account with this",
+      "address. You already have one, so we did not make a second.",
+      "",
+      "Sign in here:",
+      "",
+      url,
+      "",
+      "If you did not request a password reset, ignore this message. Nobody",
+      "can see your account or your orders from a sign-up attempt.",
+    ].join("\n"),
+  };
+}
+
+export function sendExistingAccountEmail(args: {
+  to: string;
+  url: string;
+}): Promise<{ delivered: boolean }> {
+  return send({ to: args.to, ...existingAccountEmail(args.url) });
+}
+
 export function sendVerificationEmail(args: {
   to: string;
   url: string;
@@ -363,7 +405,13 @@ import { admin } from "better-auth/plugins/admin";
 import { nextCookies } from "better-auth/next-js";
 import { db } from "@/lib/db/client";
 import * as schema from "@/lib/db/schema";
-import { sendVerificationEmail, sendPasswordResetEmail } from "@/lib/email/auth";
+import {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+  sendExistingAccountEmail,
+} from "@/lib/email/auth";
+import { recordDelivery } from "@/lib/email/delivery";
+import { claimGuestOrders } from "@/lib/orders/claim";
 
 /**
  * The Better Auth server instance. The only place `betterAuth()` is called.
@@ -380,6 +428,43 @@ export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL,
   secret: process.env.BETTER_AUTH_SECRET,
 
+  advanced: {
+    ipAddress: {
+      /**
+       * Railway terminates TLS at its edge and forwards, so `x-forwarded-for`
+       * arrives with more than one hop. Better Auth trusts a multi-hop header
+       * only when the hops to ignore are declared: with none, `getIPFromHeader`
+       * bails on `forwardedIps.length !== 1` and returns null.
+       *
+       * The consequence is not a missing field. Rate limiting then keys on a
+       * single shared bucket per path, so one attacker exhausts the sign-in
+       * budget for every customer at once, and per-attacker brute-force
+       * protection stops existing. Observed in production as a logged warning
+       * and an empty `session.ip_address`, with nothing else to notice.
+       *
+       * These are the private and CGNAT ranges an internal hop can occupy --
+       * the running container sits on 10.x. Declaring them is safe against
+       * spoofing: the chain is walked from the right and the first untrusted
+       * address wins, and anything a client prepends is further left, so it is
+       * never reached.
+       */
+      trustedProxies: [
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "::1/128",
+        "fd00::/8",
+      ],
+
+      // Stated rather than inherited, like every other option here. Turning it
+      // on would return null from getIP and put us straight back to one shared
+      // rate-limit bucket -- the exact failure the trustedProxies above fix.
+      disableIpTracking: false,
+    },
+  },
+
   emailAndPassword: {
     enabled: true,
     // An unverified account cannot sign in. This is what makes a verified
@@ -390,6 +475,25 @@ export const auth = betterAuth({
     sendResetPassword: async ({ user, url }) => {
       await sendPasswordResetEmail({ to: user.email, url });
     },
+    /**
+     * Someone tried to sign up with an address that already has an account.
+     *
+     * Better Auth answers that attempt with a fabricated success response --
+     * a plausible user object that is never persisted -- so the browser
+     * cannot tell a taken address from a free one. It also hashes the
+     * submitted password first, so the two paths take comparable time.
+     *
+     * That leaves the real account holder as the only one who should learn
+     * anything, which is what this hook is for. Measured on 2026-09-20: this
+     * fires only because `requireEmailVerification` is true, which is what
+     * flips Better Auth into the generic-response path.
+     */
+    onExistingUserSignUp: async ({ user }) => {
+      await sendExistingAccountEmail({
+        to: user.email,
+        url: `${process.env.BETTER_AUTH_URL ?? ""}/sign-in`,
+      });
+    },
   },
 
   emailVerification: {
@@ -399,7 +503,24 @@ export const auth = betterAuth({
     // One code path for post-sign-in work is worth one extra sign-in.
     autoSignInAfterVerification: false,
     sendVerificationEmail: async ({ user, url }) => {
-      await sendVerificationEmail({ to: user.email, url });
+      const { delivered } = await sendVerificationEmail({ to: user.email, url });
+      // Better Auth discards what this hook returns and swallows what it
+      // throws, so the result is handed to the Server Action out of band.
+      // Without it sign-up reports success for mail that was rejected.
+      recordDelivery(user.email, delivered);
+    },
+    /**
+     * The moment the address stops being a claim and becomes proof.
+     *
+     * Database work only. Better Auth runs this from its own GET handler for
+     * the verification link, so anything needing cookies belongs in a Server
+     * Action instead, where cookie access is defined.
+     */
+    afterEmailVerification: async (user) => {
+      const claimed = await claimGuestOrders({ userId: user.id, email: user.email });
+      if (claimed > 0) {
+        console.info("[auth] claimed guest orders", { userId: user.id, claimed });
+      }
     },
   },
 
@@ -561,6 +682,34 @@ describe("auth configuration", () => {
     const plugins = auth.options.plugins ?? [];
     expect(plugins.at(-1)?.id).toBe("next-cookies");
   });
+
+  /**
+   * Without this, Better Auth resolves no client IP behind Railway's proxy and
+   * every request shares one rate-limit bucket per path -- so one attacker
+   * exhausts the sign-in budget for every real customer, and brute-force
+   * protection against that attacker is gone. It fails silently: a warning in
+   * the logs, an empty `session.ip_address`, and no other symptom.
+   *
+   * `getIPFromHeader` trusts a multi-hop x-forwarded-for only when the hops it
+   * should ignore are declared. It walks the chain from the right and returns
+   * the first address that is not a trusted proxy, so a client-supplied entry
+   * -- which is always further left -- can never be selected.
+   */
+  it("declares the proxy hops to strip when resolving a client IP", () => {
+    expect(auth.options.advanced?.ipAddress?.trustedProxies).toEqual([
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "100.64.0.0/10",
+      "127.0.0.0/8",
+      "::1/128",
+      "fd00::/8",
+    ]);
+  });
+
+  it("leaves IP tracking on", () => {
+    expect(auth.options.advanced?.ipAddress?.disableIpTracking).toBeFalsy();
+  });
 });
 ```
 
@@ -626,7 +775,7 @@ Create `src/lib/auth/session.ts`:
 
 ```ts
 import { headers } from "next/headers";
-import { redirect } from "next/navigation";
+import { redirect, notFound } from "next/navigation";
 import { auth } from "./index";
 
 export type SessionUser = {
@@ -670,6 +819,31 @@ export async function requireSessionUser(next?: string): Promise<SessionUser> {
   if (!user) {
     const target = next ? `/sign-in?next=${encodeURIComponent(next)}` : "/sign-in";
     redirect(target);
+  }
+  return user;
+}
+
+/**
+ * The signed-in admin, or no return at all.
+ *
+ * A non-admin gets `notFound()`, not a redirect or a 403. A redirect would
+ * confirm that /admin is a real route; the 404 makes it indistinguishable
+ * from a path that was never registered. That matches how the sign-up and
+ * resend-verification forms already refuse to confirm anything about an
+ * address.
+ *
+ * Signed out is different from signed in without the role: the first is a
+ * missing credential and is worth sending to sign-in, the second is a
+ * credential that will never be enough.
+ */
+export async function requireAdminUser(next?: string): Promise<SessionUser> {
+  const user = await getSessionUser();
+  if (!user) {
+    const target = next ? `/sign-in?next=${encodeURIComponent(next)}` : "/sign-in";
+    redirect(target);
+  }
+  if (user.role !== "admin") {
+    notFound();
   }
   return user;
 }
@@ -842,12 +1016,17 @@ vi.mock("@/lib/db/client", async () => {
   return { db: shared.db };
 });
 
-const sendExistingAccountEmail = vi.fn(async () => ({ delivered: true }));
-const sendVerificationEmail = vi.fn(async () => ({ delivered: true }));
+type SendArgs = { to: string; url: string };
+/** Shared stub: every auth email reports a clean delivery. */
+const mockSend = async () => ({ delivered: true });
+/** These two record their arguments, so they declare them. */
+type Send = (args: SendArgs) => Promise<{ delivered: boolean }>;
+const sendExistingAccountEmail = vi.fn<Send>(mockSend);
+const sendVerificationEmail = vi.fn<Send>(mockSend);
 vi.mock("@/lib/email/auth", () => ({
-  sendExistingAccountEmail: (...args: unknown[]) => sendExistingAccountEmail(...args),
-  sendVerificationEmail: (...args: unknown[]) => sendVerificationEmail(...args),
-  sendPasswordResetEmail: vi.fn(async () => ({ delivered: true })),
+  sendExistingAccountEmail: (args: SendArgs) => sendExistingAccountEmail(args),
+  sendVerificationEmail: (args: SendArgs) => sendVerificationEmail(args),
+  sendPasswordResetEmail: vi.fn(mockSend),
 }));
 
 vi.mock("next/headers", () => ({
@@ -950,6 +1129,34 @@ describe("signUpAction", () => {
     expect(second).toEqual({ status: "sent", email: "buyer@example.com" });
   });
 
+  it("says so when the verification email could not be sent", async () => {
+    // The defect this covers: an unverified sending domain made Resend reject
+    // every message, and sign-up still said "check your email". The customer
+    // is left waiting for mail that does not exist, with nothing to act on.
+    // Simulated at the send itself, so this exercises the real path:
+    // hook -> recordDelivery -> takeDelivery -> state.
+    sendVerificationEmail.mockResolvedValueOnce({ delivered: false });
+
+    const state = await signUpAction({ status: "idle" }, form(VALID));
+
+    expect(state).toMatchObject({ status: "undelivered", email: VALID.email });
+  });
+
+  it("still creates the account when the email fails", async () => {
+    // The account is real -- Better Auth created it before the send was
+    // attempted. Telling them to request a new link is the honest advice,
+    // and it only works because the account exists.
+    sendVerificationEmail.mockResolvedValueOnce({ delivered: false });
+
+    await signUpAction({ status: "idle" }, form(VALID));
+
+    const rows = await ctx.db
+      .select()
+      .from(user)
+      .where(eq(user.email, VALID.email));
+    expect(rows).toHaveLength(1);
+  });
+
   it("tells the existing account holder by email instead", async () => {
     await signUpAction({ status: "idle" }, form(VALID));
     sendExistingAccountEmail.mockClear();
@@ -975,9 +1182,8 @@ Create `src/app/(store)/sign-up/actions.ts`:
 
 import { z } from "zod";
 import { headers } from "next/headers";
-import { APIError } from "better-auth/api";
 import { auth } from "@/lib/auth";
-import { sendExistingAccountEmail } from "@/lib/email/auth";
+import { takeDelivery } from "@/lib/email/delivery";
 
 const schema = z.object({
   name: z.string().trim().min(1, "Enter your name."),
@@ -990,6 +1196,8 @@ const schema = z.object({
 export type SignUpState =
   | { status: "idle" }
   | { status: "sent"; email: string }
+  /** The account exists but the confirmation email was rejected. */
+  | { status: "undelivered"; email: string }
   | { status: "error"; error: string; fieldErrors?: Record<string, string> };
 
 export async function signUpAction(
@@ -1015,27 +1223,35 @@ export async function signUpAction(
 
   const { name, email, password } = parsed.data;
 
-  try {
-    await auth.api.signUpEmail({
-      body: { name, email, password },
-      headers: await headers(),
-    });
-  } catch (err) {
-    const alreadyExists =
-      err instanceof APIError &&
-      (err.body?.code === auth.$ERROR_CODES.USER_ALREADY_EXISTS.code ||
-        err.body?.code ===
-          auth.$ERROR_CODES.USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL.code);
+  /**
+   * No "that address is taken" branch here, deliberately, and none is needed.
+   *
+   * Because the auth config sets `requireEmailVerification`, Better Auth
+   * answers a duplicate sign-up with a fabricated success response instead of
+   * throwing: nothing is written, no error is raised, and the browser cannot
+   * distinguish a taken address from a free one. Verified against 1.7.5 on
+   * 2026-09-20 -- an earlier draft of this action caught
+   * USER_ALREADY_EXISTS, and that catch was simply dead code.
+   *
+   * The real account holder is notified from `onExistingUserSignUp` in the
+   * auth config, which is the hook Better Auth provides for it.
+   */
+  await auth.api.signUpEmail({
+    body: { name, email, password },
+    headers: await headers(),
+  });
 
-    if (!alreadyExists) throw err;
-
-    // Deliberately falls through to the same "sent" state below. The account
-    // holder is told by email; the browser learns nothing. See the task note
-    // on account enumeration.
-    await sendExistingAccountEmail({
-      to: email,
-      url: `${process.env.BETTER_AUTH_URL ?? ""}/sign-in`,
-    });
+  /**
+   * Only say the email is on its way if it actually was.
+   *
+   * `undefined` means no send was attempted in this request -- the duplicate
+   * path above, where staying silent is the whole point -- so it is treated
+   * as success. An explicit `false` means Resend rejected the message, and
+   * saying "check your email" then leaves the customer waiting for mail that
+   * does not exist.
+   */
+  if (takeDelivery(email) === false) {
+    return { status: "undelivered", email };
   }
 
   return { status: "sent", email };
@@ -1094,6 +1310,20 @@ export function SignUpForm() {
       <p role="status">
         Check {state.email} for a link to confirm your address. You will not be
         able to sign in until you do.
+      </p>
+    );
+  }
+
+  if (state.status === "undelivered") {
+    return (
+      <p role="alert" className={styles.error}>
+        Your account was created, but we could not send the confirmation email
+        to {state.email}. Nothing is wrong with your account —{" "}
+        <Link href={`/verify-email?email=${encodeURIComponent(state.email)}`}>
+          ask for another link
+        </Link>
+        , or <Link href="/contact">contact us</Link> if it still does not
+        arrive.
       </p>
     );
   }
@@ -1225,19 +1455,21 @@ vi.mock("@/lib/db/client", async () => {
   return { db: shared.db };
 });
 
+/** Shared stub: every auth email reports a clean delivery. */
+const mockSend = async () => ({ delivered: true });
 vi.mock("@/lib/email/auth", () => ({
-  sendVerificationEmail: vi.fn(async () => ({ delivered: true })),
-  sendPasswordResetEmail: vi.fn(async () => ({ delivered: true })),
-  sendExistingAccountEmail: vi.fn(async () => ({ delivered: true })),
+  sendVerificationEmail: vi.fn(mockSend),
+  sendPasswordResetEmail: vi.fn(mockSend),
+  sendExistingAccountEmail: vi.fn(mockSend),
 }));
 
 vi.mock("next/headers", () => ({
   headers: async () => new Headers(),
 }));
 
-const mergeGuestCart = vi.fn(async () => {});
+const mergeGuestCart = vi.fn<(userId: string) => Promise<void>>(async () => {});
 vi.mock("@/lib/cart/merge", () => ({
-  mergeGuestCart: (...args: unknown[]) => mergeGuestCart(...args),
+  mergeGuestCart: (userId: string) => mergeGuestCart(userId),
 }));
 
 const { signInAction } = await import("./actions");
@@ -1357,14 +1589,102 @@ task is independently green, and Task 8 replaces its body:
 Create `src/lib/cart/merge.ts`:
 
 ```ts
+import { cookies } from "next/headers";
+import { and, eq } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { carts, cartItems } from "@/lib/db/schema";
+import { getCatalogProductById } from "@/lib/catalog";
+import { CART_COOKIE } from "@/lib/cookies";
+import { MAX_LINE_QUANTITY } from "./limits";
+
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+
 /**
- * Merges a guest cart into the signed-in customer's cart.
+ * Merges the guest cart in the caller's cookie into the signed-in customer's
+ * cart. Quantities sum; the sum is capped at what is in stock.
  *
- * Implemented in Task 8. The signature exists from Task 5 so the sign-in
- * action can call it, and so the two tasks cannot disagree about it.
+ * WRITES A COOKIE -- callable only from a Server Action or Route Handler. The
+ * sign-in action is the only caller.
+ *
+ * Capping here rather than at checkout is deliberate. An uncapped merge moves
+ * the failure to the checkout page, where the customer has already entered an
+ * address and is told, at the last step, that they cannot have what their cart
+ * says they can.
  */
-export async function mergeGuestCart(_userId: string): Promise<void> {
-  return;
+export async function mergeGuestCart(userId: string): Promise<void> {
+  const jar = await cookies();
+  const guestCartId = jar.get(CART_COOKIE)?.value;
+  if (!guestCartId) return;
+
+  const [guestCart] = await db
+    .select()
+    .from(carts)
+    .where(eq(carts.id, guestCartId))
+    .limit(1);
+  if (!guestCart) return;
+
+  // Already theirs -- signing in twice must not double anything.
+  if (guestCart.userId === userId) return;
+
+  const [userCart] = await db
+    .select()
+    .from(carts)
+    .where(eq(carts.userId, userId))
+    .limit(1);
+
+  // No cart of their own: adopt this one whole. Nothing to sum, and the
+  // cookie already points at it.
+  if (!userCart) {
+    await db.update(carts).set({ userId }).where(eq(carts.id, guestCartId));
+    return;
+  }
+
+  const guestItems = await db
+    .select()
+    .from(cartItems)
+    .where(eq(cartItems.cartId, guestCartId));
+
+  for (const item of guestItems) {
+    const product = await getCatalogProductById(item.productId);
+    if (!product || !product.active) continue;
+
+    const [existing] = await db
+      .select()
+      .from(cartItems)
+      .where(
+        and(
+          eq(cartItems.cartId, userCart.id),
+          eq(cartItems.productId, item.productId),
+        ),
+      )
+      .limit(1);
+
+    const summed = (existing?.quantity ?? 0) + item.quantity;
+    const quantity = Math.min(summed, product.available, MAX_LINE_QUANTITY);
+    if (quantity <= 0) continue;
+
+    await db
+      .insert(cartItems)
+      .values({ cartId: userCart.id, productId: item.productId, quantity })
+      .onConflictDoUpdate({
+        target: [cartItems.cartId, cartItems.productId],
+        set: { quantity },
+      });
+  }
+
+  await db.delete(cartItems).where(eq(cartItems.cartId, guestCartId));
+  await db
+    .update(carts)
+    .set({ updatedAt: new Date() })
+    .where(eq(carts.id, userCart.id));
+
+  jar.set(CART_COOKIE, userCart.id, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: COOKIE_MAX_AGE,
+    path: "/",
+  });
 }
 ```
 
@@ -1488,8 +1808,19 @@ export function SignInForm() {
   useEffect(() => {
     if (state.status !== "ok") return;
     const next = params.get("next");
-    const safe = next && next.startsWith("/") && !next.startsWith("//") ? next : "/account/orders";
+    const safe =
+      next && next.startsWith("/") && !next.startsWith("//") ? next : "/account/orders";
     router.push(safe);
+    /**
+     * refresh() as well as push(), or the header keeps saying "Sign in".
+     *
+     * The store layout reads the session and renders the account link, but a
+     * client-side navigation reuses a shared layout instead of re-rendering
+     * it, so the copy stays as it was when the page was first loaded. Without
+     * this the customer signs in successfully and the chrome still tells them
+     * they are signed out until they hard-reload. Measured on 2026-09-20.
+     */
+    router.refresh();
   }, [state.status, params, router]);
 
   return (
@@ -1884,12 +2215,15 @@ Create `src/app/(store)/verify-email/actions.ts`:
 import { z } from "zod";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
+import { takeDelivery } from "@/lib/email/delivery";
 
 const schema = z.object({ email: z.email("Enter a valid email address.") });
 
 export type ResendState =
   | { status: "idle" }
   | { status: "sent" }
+  /** A send was attempted for a real account and Resend rejected it. */
+  | { status: "undelivered" }
   | { status: "error"; error: string };
 
 export async function resendVerificationAction(
@@ -1912,6 +2246,21 @@ export async function resendVerificationAction(
     // enumeration oracle the sign-up form deliberately is not.
   }
 
+  /**
+   * The one thing worth breaking that silence for: mail we tried and failed
+   * to send.
+   *
+   * `undefined` is the silence above -- no send was attempted, because the
+   * address has no account or is already verified -- and it stays "sent".
+   * Only an explicit `false` is reported, which means an account exists and
+   * Resend rejected the message. So this says nothing about any address until
+   * our own mail is broken, and staying quiet then would strand the customer
+   * on the page we send them to precisely because a send already failed.
+   */
+  if (takeDelivery(parsed.data.email) === false) {
+    return { status: "undelivered" };
+  }
+
   return { status: "sent" };
 }
 ```
@@ -1924,6 +2273,7 @@ Create `src/app/(store)/verify-email/ResendForm.tsx`:
 "use client";
 
 import { useActionState } from "react";
+import Link from "next/link";
 import { resendVerificationAction, type ResendState } from "./actions";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
@@ -1938,6 +2288,17 @@ export function ResendForm({ defaultEmail }: { defaultEmail?: string }) {
     return (
       <p role="status">
         If that address has an unverified account, a new link is on its way.
+      </p>
+    );
+  }
+
+  if (state.status === "undelivered") {
+    return (
+      <p role="alert">
+        We tried, but we could not send the email just now — this is a problem
+        on our end, not with your account. Please{" "}
+        <Link href="/contact">contact us</Link> and we will confirm your
+        address for you.
       </p>
     );
   }
@@ -2101,10 +2462,12 @@ vi.mock("@/lib/db/client", async () => {
   return { db: shared.db };
 });
 
+/** Shared stub: every auth email reports a clean delivery. */
+const mockSend = async () => ({ delivered: true });
 vi.mock("@/lib/email/auth", () => ({
-  sendVerificationEmail: vi.fn(async () => ({ delivered: true })),
-  sendPasswordResetEmail: vi.fn(async () => ({ delivered: true })),
-  sendExistingAccountEmail: vi.fn(async () => ({ delivered: true })),
+  sendVerificationEmail: vi.fn(mockSend),
+  sendPasswordResetEmail: vi.fn(mockSend),
+  sendExistingAccountEmail: vi.fn(mockSend),
 }));
 
 vi.mock("next/headers", () => ({ headers: async () => new Headers() }));
@@ -2368,8 +2731,8 @@ export default async function ResetPasswordPage({
     return (
       <ContentPage title="Choose a new password">
         <p>
-          That link is missing its token. <Link href="/forgot-password">Ask for
-          a new one</Link>.
+          That link is missing its token.{" "}
+          <Link href="/forgot-password">Ask for a new one</Link>.
         </p>
       </ContentPage>
     );
@@ -2442,7 +2805,8 @@ vi.mock("next/headers", () => ({
   cookies: async () => ({
     get: (name: string) =>
       name === "cs_cart" && guestCartId ? { value: guestCartId } : undefined,
-    set: (...args: unknown[]) => cookieSet(...args),
+    set: (name: string, value: string, options: unknown) =>
+      cookieSet(name, value, options),
   }),
 }));
 
@@ -2467,6 +2831,7 @@ beforeEach(async () => {
     .values({
       slug: "coldsmoke-edt",
       name: "Coldsmoke Eau de Toilette",
+      description: "Cold air. Dark spice.",
       priceCents: 4500,
       sku: "CS-EDT-50",
     })
@@ -2827,6 +3192,7 @@ beforeEach(async () => {
     .values({
       slug: "coldsmoke-edt",
       name: "Coldsmoke Eau de Toilette",
+      description: "Cold air. Dark spice.",
       priceCents: 4500,
       sku: "CS-EDT-50",
     })
@@ -3398,10 +3764,18 @@ import { requireSessionUser } from "@/lib/auth/session";
 import { createAddress, deleteAddress, setDefaultAddress } from "@/lib/addresses";
 
 const schema = z.object({
-  label: z.string().trim().optional().transform((v) => v || null),
+  label: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => v || null),
   name: z.string().trim().min(1, "Enter a name."),
   line1: z.string().trim().min(1, "Enter a street address."),
-  line2: z.string().trim().optional().transform((v) => v || null),
+  line2: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => v || null),
   city: z.string().trim().min(1, "Enter a city."),
   state: z
     .string()
@@ -3411,10 +3785,27 @@ const schema = z.object({
   postalCode: z.string().trim().regex(/^\d{5}(-\d{4})?$/, "Enter a valid ZIP code."),
 });
 
+/**
+ * `values` carries the submitted fields back to the form on an error.
+ *
+ * React resets an uncontrolled form once its action returns, so without this
+ * a customer who mistypes one field -- a state code, say -- gets the whole
+ * address blanked and has to type all six fields again. Measured on
+ * 2026-09-20: the retry submitted empty fields and failed a second time for
+ * a different reason, which is a maddening thing to happen to someone who
+ * made one small mistake.
+ */
+export type AddressValues = Record<string, string>;
+
 export type AddressState =
   | { status: "idle" }
   | { status: "saved" }
-  | { status: "error"; error: string; fieldErrors?: Record<string, string> };
+  | {
+      status: "error";
+      error: string;
+      fieldErrors?: Record<string, string>;
+      values?: AddressValues;
+    };
 
 export async function saveAddressAction(
   _prev: AddressState,
@@ -3422,7 +3813,8 @@ export async function saveAddressAction(
 ): Promise<AddressState> {
   const user = await requireSessionUser("/account/addresses");
 
-  const parsed = schema.safeParse(Object.fromEntries(formData));
+  const raw = Object.fromEntries(formData);
+  const parsed = schema.safeParse(raw);
   if (!parsed.success) {
     const fieldErrors: Record<string, string> = {};
     for (const issue of parsed.error.issues) {
@@ -3431,7 +3823,18 @@ export async function saveAddressAction(
         fieldErrors[key] = issue.message;
       }
     }
-    return { status: "error", error: "Check the highlighted fields.", fieldErrors };
+
+    const values: AddressValues = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (typeof value === "string") values[key] = value;
+    }
+
+    return {
+      status: "error",
+      error: "Check the highlighted fields.",
+      fieldErrors,
+      values,
+    };
   }
 
   await createAddress(user.id, parsed.data);
@@ -3463,6 +3866,11 @@ Create `src/app/(store)/account/addresses/page.module.css`:
   display: grid;
   gap: var(--space-4);
   margin-bottom: var(--space-5);
+  /* A <ul> for the semantics, not for the bullets: these are cards. The
+     prose styles in ContentPage indent and mark list items, which is right
+     for a paragraph list and wrong for this one. */
+  list-style: none;
+  padding-left: 0;
 }
 
 .address {
@@ -3485,11 +3893,19 @@ Create `src/app/(store)/account/addresses/page.module.css`:
   display: grid;
   gap: var(--space-4);
   max-width: 26rem;
+  /* The heading above sits flush against the first label without this. */
+  margin-top: var(--space-4);
 }
 
 .row {
   display: flex;
   gap: var(--space-3);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
 }
 ```
 
@@ -3513,22 +3929,70 @@ export function AddressForm() {
   const errorFor = (name: string) =>
     state.status === "error" ? state.fieldErrors?.[name] : undefined;
 
+  /**
+   * React resets an uncontrolled form once its action returns, so a rejected
+   * submission would otherwise blank every field. Re-seeding from the values
+   * the action echoed back means one bad state code costs one correction,
+   * not the whole address.
+   */
+  const valueFor = (name: string) =>
+    state.status === "error" ? (state.values?.[name] ?? "") : "";
+
   return (
     <form action={action} className={styles.form}>
-      <Field label="Label (optional)" name="label" placeholder="Home" />
-      <Field label="Full name" name="name" autoComplete="name" required error={errorFor("name")} />
+      <Field
+        label="Label (optional)"
+        name="label"
+        placeholder="Home"
+        defaultValue={valueFor("label")}
+      />
+      <Field
+        label="Full name"
+        name="name"
+        autoComplete="name"
+        required
+        defaultValue={valueFor("name")}
+        error={errorFor("name")}
+      />
       <Field
         label="Address"
         name="line1"
         autoComplete="address-line1"
         required
+        defaultValue={valueFor("line1")}
         error={errorFor("line1")}
       />
-      <Field label="Apartment (optional)" name="line2" autoComplete="address-line2" />
-      <Field label="City" name="city" autoComplete="address-level2" required error={errorFor("city")} />
+      <Field
+        label="Apartment (optional)"
+        name="line2"
+        autoComplete="address-line2"
+        defaultValue={valueFor("line2")}
+      />
+      <Field
+        label="City"
+        name="city"
+        autoComplete="address-level2"
+        required
+        defaultValue={valueFor("city")}
+        error={errorFor("city")}
+      />
       <div className={styles.row}>
-        <Field label="State" name="state" autoComplete="address-level1" required error={errorFor("state")} />
-        <Field label="ZIP" name="postalCode" autoComplete="postal-code" required error={errorFor("postalCode")} />
+        <Field
+          label="State"
+          name="state"
+          autoComplete="address-level1"
+          required
+          defaultValue={valueFor("state")}
+          error={errorFor("state")}
+        />
+        <Field
+          label="ZIP"
+          name="postalCode"
+          autoComplete="postal-code"
+          required
+          defaultValue={valueFor("postalCode")}
+          error={errorFor("postalCode")}
+        />
       </div>
 
       {state.status === "saved" && <p role="status">Address saved.</p>}
@@ -3579,16 +4043,18 @@ export default async function AccountAddressesPage() {
 
               {/* Each action is passed straight to `action` so the buttons
                   work without JavaScript, like every other form here. */}
-              {!address.isDefault && (
-                <form action={setDefaultAddressAction}>
+              <div className={styles.actions}>
+                {!address.isDefault && (
+                  <form action={setDefaultAddressAction}>
+                    <input type="hidden" name="id" value={address.id} />
+                    <Button type="submit">Make default</Button>
+                  </form>
+                )}
+                <form action={deleteAddressAction}>
                   <input type="hidden" name="id" value={address.id} />
-                  <Button type="submit">Make default</Button>
+                  <Button type="submit">Remove</Button>
                 </form>
-              )}
-              <form action={deleteAddressAction}>
-                <input type="hidden" name="id" value={address.id} />
-                <Button type="submit">Remove</Button>
-              </form>
+              </div>
             </li>
           ))}
         </ul>
@@ -3685,7 +4151,7 @@ Expected: FAIL on the expression case.
 Create `e2e/accounts.spec.ts`:
 
 ```ts
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { randomBytes } from "node:crypto";
 
 /**
@@ -3702,15 +4168,32 @@ function freshEmail(): string {
 
 const PASSWORD = "a long enough password";
 
+/**
+ * Sign-up answers with one of two messages, and both are correct: "check your
+ * email" when Resend accepted the confirmation, and an explicit failure when
+ * it did not. Which one appears depends on whether a sending domain is
+ * verified -- a third-party fact an end-to-end run must not depend on.
+ *
+ * So assert what both branches guarantee instead of the wording of either:
+ * the address is echoed back, and the account exists either way. Asserting
+ * "Check" pinned the optimistic branch and started failing the moment sign-up
+ * learned to admit a rejected send.
+ */
+async function expectSignUpAcknowledged(page: Page, email: string) {
+  await expect(page.getByText(email)).toBeVisible();
+}
+
 test("a visitor can create an account and is told to confirm it", async ({ page }) => {
+  const email = freshEmail();
+
   await page.goto("/sign-up");
 
   await page.getByLabel("Your name").fill("Test Buyer");
-  await page.getByLabel("Email").fill(freshEmail());
+  await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();
 
-  await expect(page.getByText("Check")).toBeVisible();
+  await expectSignUpAcknowledged(page, email);
 });
 
 test("an unverified account cannot sign in, and is told why", async ({ page }) => {
@@ -3721,7 +4204,7 @@ test("an unverified account cannot sign in, and is told why", async ({ page }) =
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page.getByText("Check")).toBeVisible();
+  await expectSignUpAcknowledged(page, email);
 
   await page.goto("/sign-in");
   await page.getByLabel("Email").fill(email);

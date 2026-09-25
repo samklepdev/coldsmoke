@@ -339,6 +339,13 @@ export default defineRailway(() => {
     // run unattended. Depends on tsx and dotenv being in `dependencies`.
     preDeploy: "npm run db:migrate",
 
+    // Without this Railway only checks that the port opened, which a container
+    // that cannot reach Postgres does perfectly well -- it boots, serves, and
+    // throws on every page. The route runs `select 1`, so a bad DATABASE_URL
+    // or an unreachable database fails the deploy instead of being promoted.
+    healthcheck: "/api/health",
+    healthcheckTimeout: 30,
+
     env: {
       DATABASE_URL: db.env.DATABASE_URL,
       BETTER_AUTH_SECRET: preserve(),
