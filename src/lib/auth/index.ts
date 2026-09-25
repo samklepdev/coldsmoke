@@ -27,6 +27,38 @@ export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL,
   secret: process.env.BETTER_AUTH_SECRET,
 
+  advanced: {
+    ipAddress: {
+      /**
+       * Railway terminates TLS at its edge and forwards, so `x-forwarded-for`
+       * arrives with more than one hop. Better Auth trusts a multi-hop header
+       * only when the hops to ignore are declared: with none, `getIPFromHeader`
+       * bails on `forwardedIps.length !== 1` and returns null.
+       *
+       * The consequence is not a missing field. Rate limiting then keys on a
+       * single shared bucket per path, so one attacker exhausts the sign-in
+       * budget for every customer at once, and per-attacker brute-force
+       * protection stops existing. Observed in production as a logged warning
+       * and an empty `session.ip_address`, with nothing else to notice.
+       *
+       * These are the private and CGNAT ranges an internal hop can occupy --
+       * the running container sits on 10.x. Declaring them is safe against
+       * spoofing: the chain is walked from the right and the first untrusted
+       * address wins, and anything a client prepends is further left, so it is
+       * never reached.
+       */
+      trustedProxies: [
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "::1/128",
+        "fd00::/8",
+      ],
+    },
+  },
+
   emailAndPassword: {
     enabled: true,
     // An unverified account cannot sign in. This is what makes a verified
