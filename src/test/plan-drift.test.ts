@@ -24,6 +24,9 @@ const PLANS = [
   "docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md",
   "docs/superpowers/plans/2026-09-20-admin-orders.md",
   "docs/superpowers/plans/2026-09-23-railway-reservation-cron.md",
+  "docs/superpowers/plans/2026-09-20-customer-accounts.md",
+  "docs/superpowers/plans/2026-09-20-cart-quantity-stepper.md",
+  "docs/superpowers/plans/2026-09-20-marketing-and-legal-pages.md",
 ].map((p) => path.join(ROOT, p));
 
 // Joined with blank lines: the block parser is anchored on "Create `path`:"

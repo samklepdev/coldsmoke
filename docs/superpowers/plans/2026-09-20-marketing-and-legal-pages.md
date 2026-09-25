@@ -77,15 +77,32 @@ describe("business details", () => {
    *
    * Consequences, both intended: adding a new placeholder fails here, and
    * filling one in ALSO fails here until it is removed from this list. The
-   * list therefore cannot drift out of date. When it reaches [], the business
-   * details are complete.
+   * list therefore cannot drift out of date.
+   *
+   * The list reached [] on 2026-09-21 and went back to three entries on
+   * 2026-09-25. legalName, addressLine1 and addressLocality had all been
+   * filled in with plausible stand-ins -- "Meridian Fragrance, LLC",
+   * "123 Main Street", "Houston, TX 77023" -- and none carried a marker, so
+   * the list read empty while the deployed Privacy and Terms pages published
+   * a fabricated entity at a fabricated address. Exactly the hole described
+   * below, shipped.
+   *
+   * What this does NOT catch: a value that reads like a stand-in but carries
+   * no bracketed marker. isPending only recognises brackets, so a plausible
+   * wrong answer settles silently. These four render into the Terms and
+   * Privacy pages, so they want a human eye, not just a green test.
+   *
+   * supportEmail is deliberately NOT bracketed despite being unusable -- its
+   * domain is unregistered, so the address bounces. contact/actions.ts passes
+   * it to Resend as the `to`, so a bracketed value would not render a visible
+   * marker, it would break the contact form. Fix it by registering the
+   * domain, not by marking it pending.
    */
-  it("lists exactly the details still waiting on the LLC", () => {
+  it("has no details left waiting on the LLC", () => {
     expect(PENDING_BUSINESS_DETAILS).toEqual([
       "addressLine1",
       "addressLocality",
       "legalName",
-      "supportEmail",
     ]);
   });
 
@@ -141,10 +158,9 @@ Create `src/lib/business.ts`:
 export const BUSINESS = {
   legalName: "[legal name]",
   addressLine1: "[street address]",
-  addressLocality: "[city, state, ZIP]",
-  supportEmail: "[support email]",
+  addressLocality: "[city, state ZIP]",
+  supportEmail: "support@wearcoldsmoke.com",
 
-  // Confirmed by the owner, 2026-09-20. Not placeholders.
   returnWindowDays: 30,
   returnCondition: "unopened",
   governingState: "Texas",
@@ -1180,7 +1196,7 @@ import {
   recordMessage,
   markDelivered,
 } from "@/lib/contact";
-import { getResend } from "@/lib/email/client";
+import { getResend, EMAIL_FROM } from "@/lib/email/client";
 import { BUSINESS } from "@/lib/business";
 
 const schema = z.object({
@@ -1259,8 +1275,19 @@ export async function sendContactMessage(
   });
 
   try {
-    await getResend().emails.send({
-      from: "Coldsmoke <noreply@wearcoldsmoke.com>",
+    // Resend reports API failures by RETURNING an error, not by throwing: a
+    // rejected address comes back as { data: null, error: {...} } with a 422.
+    // Measured on 2026-09-20 against the real API. So the catch below only
+    // covers network-level throws, and `error` has to be checked explicitly --
+    // otherwise deliveredAt would be set for mail that was never accepted,
+    // which is the one thing this column exists to tell us apart.
+    const { error } = await getResend().emails.send({
+      // EMAIL_FROM, not a literal: Resend rejects any sending domain that is
+      // not verified, so a hardcoded address here silently stops matching the
+      // one domain that was set up. `replyTo` below is what actually carries
+      // the conversation back to the customer, so the From only needs to be
+      // ours and deliverable.
+      from: EMAIL_FROM,
       to: BUSINESS.supportEmail,
       replyTo: parsed.data.email,
       subject: parsed.data.orderNumber
@@ -1268,7 +1295,12 @@ export async function sendContactMessage(
         : "Contact — general",
       text: parsed.data.message,
     });
-    await markDelivered(id);
+
+    if (error) {
+      console.error("[contact] stored but not delivered", { id, cause: error });
+    } else {
+      await markDelivered(id);
+    }
   } catch (err) {
     // The message IS received -- it is in the database. Telling the customer
     // otherwise would prompt them to send it again.
@@ -1401,6 +1433,7 @@ import { sendContactMessage, type ContactState } from "./actions";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { Textarea } from "@/components/ui/Textarea";
+import styles from "./page.module.css";
 
 /**
  * `action` receives the bound action from useActionState, which Next can still
@@ -1422,7 +1455,7 @@ export function ContactForm() {
   }
 
   return (
-    <form action={action}>
+    <form action={action} className={styles.form}>
       <Field label="Your email" name="email" type="email" required />
       <Field
         label="Order number (optional)"
@@ -1448,7 +1481,9 @@ export function ContactForm() {
       </div>
 
       {state.status === "error" && !state.fieldErrors && (
-        <p role="alert">{state.error}</p>
+        <p role="alert" className={styles.error}>
+          {state.error}
+        </p>
       )}
 
       <Button type="submit" variant="primary" disabled={pending}>
@@ -1567,6 +1602,22 @@ function internalHrefs(file: string): string[] {
     .filter((href) => !href.startsWith("//"));
 }
 
+/**
+ * Paths that reach the chrome through a JSX expression rather than a literal
+ * attribute -- `href={signedIn ? "/account/orders" : "/sign-in"}`.
+ *
+ * `internalHrefs` reads literal href="..." attributes only, so these are
+ * invisible to it. Listing them by hand is not ideal; leaving a link
+ * unchecked because it is written as a ternary is worse. The assertion below
+ * checks both that the route exists AND that the header still mentions the
+ * path, so deleting the link from the header fails here rather than silently
+ * shrinking what is covered.
+ */
+const EXPRESSION_HREFS: [string, string][] = [
+  ["src/components/SiteHeader.tsx", "/account/orders"],
+  ["src/components/SiteHeader.tsx", "/sign-in"],
+];
+
 /** Does a route exist for this path? Dynamic segments match any value. */
 function routeExists(href: string): boolean {
   const segments = href.split("/").filter(Boolean);
@@ -1596,6 +1647,15 @@ describe("site chrome links", () => {
   it.each(links)("%s links to %s, which exists", (_file, href) => {
     expect(routeExists(href)).toBe(true);
   });
+
+  it.each(EXPRESSION_HREFS)(
+    "%s links to %s from an expression, which exists",
+    (file, href) => {
+      const source = readFileSync(path.join(ROOT, file), "utf8");
+      expect(source, `${file} no longer mentions ${href}`).toContain(`"${href}"`);
+      expect(routeExists(href)).toBe(true);
+    },
+  );
 });
 ```
 
@@ -1619,6 +1679,34 @@ Create `e2e/contact.spec.ts`:
 
 ```ts
 import { test, expect } from "@playwright/test";
+import { randomBytes } from "node:crypto";
+
+/**
+ * A distinct client address for every run of this file.
+ *
+ * The contact form rate-limits on a hash of the client IP: five messages per
+ * rolling hour. Each run of this suite spends one of those five, so without a
+ * fresh address the sixth run within an hour failed on the limiter rather than
+ * on a defect -- a green suite that goes red purely because you ran it too
+ * often. Measured before this was added: runs one through five passed, run six
+ * failed and stored nothing.
+ *
+ * Deliberately not fixed by raising the limit or resetting the table. The
+ * limit is production behaviour and should not bend for tests, and reaching
+ * into Postgres would give this suite a second way to talk to the app when
+ * every other assertion here goes through the browser.
+ *
+ * 2001:db8::/32 is reserved for documentation (RFC 3849), so a generated
+ * address can never collide with a real client.
+ */
+function documentationAddress(): string {
+  const groups = Array.from({ length: 6 }, () =>
+    randomBytes(2).toString("hex"),
+  );
+  return ["2001", "db8", ...groups].join(":");
+}
+
+test.use({ extraHTTPHeaders: { "x-forwarded-for": documentationAddress() } });
 
 test("a visitor can send a contact message", async ({ page }) => {
   await page.goto("/contact");
