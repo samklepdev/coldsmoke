@@ -35,7 +35,7 @@ export function StateSelect({
       error={error}
     >
       <option value="" disabled>
-        Select a state
+        Choose a state
       </option>
       {US_STATES.map(({ code, name }) => (
         <option key={code} value={code}>

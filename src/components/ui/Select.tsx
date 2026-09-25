@@ -15,8 +15,7 @@ type Props = SelectHTMLAttributes<HTMLSelectElement> & {
  * It imports Field's stylesheet rather than owning a copy: an input and a
  * select sit side by side in the address row, and two stylesheets would drift
  * -- one border colour updated, the other forgotten. The native chevron is
- * kept; Select.module.css carries the one rule an input does not need, which
- * is room on the right so the arrow is not crowded against the border.
+ * replaced rather than kept; Select.module.css explains why.
  */
 export function Select({ label, error, className, children, ...rest }: Props) {
   const id = useId();

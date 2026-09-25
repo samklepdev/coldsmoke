@@ -27,3 +27,18 @@ select.select {
   background-size: 0.3rem 0.3rem;
   background-repeat: no-repeat;
 }
+
+/*
+ * Forced colours (Windows high contrast) blanks any background-image that is
+ * not a url(), which would leave `appearance: none` showing a bordered box
+ * with no chevron at all -- indistinguishable from the ZIP input beside it.
+ * Hand the native control back instead; its arrow is drawn by the OS and is
+ * guaranteed to be visible.
+ */
+@media (forced-colors: active) {
+  select.select {
+    appearance: auto;
+    padding-right: 0.9rem;
+    background-image: none;
+  }
+}

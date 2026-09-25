@@ -24,9 +24,9 @@
 ## Deviations from the spec (deliberate, already reasoned)
 
 1. **No `isStateCode` guard.** The spec's §3 sketch exported one, but `z.enum(US_STATE_CODES)` does the only validation there is, leaving the guard with no caller. YAGNI — it is not written.
-2. **`Select.module.css` holds one rule, not a copy of Field's.** The spec proposed a stylesheet that `composes` every class from `Field.module.css`. `Select.tsx` imports `Field.module.css` directly instead, so there is still exactly one definition of the border, focus ring and error colour. `Select.module.css` exists only for the single rule an input genuinely does not need — right-hand room for the native chevron — and uses `select.select` element+class specificity rather than `composes`, because `.input` sets `padding` as a shorthand and an equal-specificity class would win or lose on stylesheet order.
+2. **`Select.module.css` holds one rule, not a copy of Field's.** The spec proposed a stylesheet that `composes` every class from `Field.module.css`. `Select.tsx` imports `Field.module.css` directly instead, so there is still exactly one definition of the border, focus ring and error colour. `Select.module.css` exists only for what an input genuinely does not need — the dropdown chevron — and uses `select.select` element+class specificity rather than `composes`, because `.input` sets `background` and `padding` as shorthands and an equal-specificity class would win or lose on stylesheet order.
 
-   (Added after Task 2's review, in response to the chevron sitting against the control's right edge in the running app. Task 2's committed `Select.tsx` predates it; Step 1b and the updated Step 1 block below are the current state.)
+   (Added after Task 2's review, in response to the chevron sitting against the control's right edge in the running app. The first attempt set `padding-right` alone; Chromium draws the native arrow at a fixed inset and ignores padding, so the control now sets `appearance: none` and draws its own, with a `forced-colors` fallback to the native one. Task 2's committed `Select.tsx` predates all of this; Step 1b and the Step 1 block below are the current state.)
 
 Everything else follows the spec as approved.
 
@@ -235,8 +235,7 @@ type Props = SelectHTMLAttributes<HTMLSelectElement> & {
  * It imports Field's stylesheet rather than owning a copy: an input and a
  * select sit side by side in the address row, and two stylesheets would drift
  * -- one border colour updated, the other forgotten. The native chevron is
- * kept; Select.module.css carries the one rule an input does not need, which
- * is room on the right so the arrow is not crowded against the border.
+ * replaced rather than kept; Select.module.css explains why.
  */
 export function Select({ label, error, className, children, ...rest }: Props) {
   const id = useId();
@@ -307,6 +306,21 @@ select.select {
   background-size: 0.3rem 0.3rem;
   background-repeat: no-repeat;
 }
+
+/*
+ * Forced colours (Windows high contrast) blanks any background-image that is
+ * not a url(), which would leave `appearance: none` showing a bordered box
+ * with no chevron at all -- indistinguishable from the ZIP input beside it.
+ * Hand the native control back instead; its arrow is drawn by the OS and is
+ * guaranteed to be visible.
+ */
+@media (forced-colors: active) {
+  select.select {
+    appearance: auto;
+    padding-right: 0.9rem;
+    background-image: none;
+  }
+}
 ```
 
 Verified by screenshotting the rendered control in Chromium, not by reading a computed style. The first attempt at this rule set `padding-right` alone and measured `33.6px` on the element — the property applied, and the arrow did not move, because Chromium's native arrow ignores padding. Check the pixels for this one.
@@ -355,7 +369,7 @@ export function StateSelect({
       error={error}
     >
       <option value="" disabled>
-        Select a state
+        Choose a state
       </option>
       {US_STATES.map(({ code, name }) => (
         <option key={code} value={code}>
