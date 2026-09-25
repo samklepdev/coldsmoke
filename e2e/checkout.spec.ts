@@ -57,9 +57,19 @@ const ADDRESS = {
   "Full name": "Test Buyer",
   Address: "1 Powder Lane",
   City: "Bozeman",
-  State: "MT",
   ZIP: "59715",
 };
+
+/**
+ * State is a <select>, and Playwright's fill() throws on one, so it cannot
+ * ride along in the ADDRESS loop with the text fields.
+ */
+async function fillAddress(page: import("@playwright/test").Page) {
+  for (const [label, value] of Object.entries(ADDRESS)) {
+    await page.getByLabel(label, { exact: true }).fill(value);
+  }
+  await page.getByLabel("State", { exact: true }).selectOption("MT");
+}
 
 async function addBottleToCart(page: import("@playwright/test").Page) {
   await page.goto("/shop");
@@ -82,9 +92,7 @@ test("a guest can fill a cart and reach the checkout form", async ({ page }) => 
   await page.getByRole("link", { name: "Checkout" }).click();
   await expect(page).toHaveURL(/\/checkout/);
 
-  for (const [label, value] of Object.entries(ADDRESS)) {
-    await page.getByLabel(label, { exact: true }).fill(value);
-  }
+  await fillAddress(page);
 
   await expect(
     page.getByRole("button", { name: "Continue to payment" }),
@@ -167,9 +175,7 @@ test("a guest can buy a bottle", async ({ page }) => {
   await page.getByRole("link", { name: "Checkout" }).click();
   await expect(page).toHaveURL(/\/checkout/);
 
-  for (const [label, value] of Object.entries(ADDRESS)) {
-    await page.getByLabel(label, { exact: true }).fill(value);
-  }
+  await fillAddress(page);
 
   await page.getByRole("button", { name: "Continue to payment" }).click();
 
