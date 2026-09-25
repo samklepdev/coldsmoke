@@ -42,4 +42,32 @@ describe("auth configuration", () => {
     const plugins = auth.options.plugins ?? [];
     expect(plugins.at(-1)?.id).toBe("next-cookies");
   });
+
+  /**
+   * Without this, Better Auth resolves no client IP behind Railway's proxy and
+   * every request shares one rate-limit bucket per path -- so one attacker
+   * exhausts the sign-in budget for every real customer, and brute-force
+   * protection against that attacker is gone. It fails silently: a warning in
+   * the logs, an empty `session.ip_address`, and no other symptom.
+   *
+   * `getIPFromHeader` trusts a multi-hop x-forwarded-for only when the hops it
+   * should ignore are declared. It walks the chain from the right and returns
+   * the first address that is not a trusted proxy, so a client-supplied entry
+   * -- which is always further left -- can never be selected.
+   */
+  it("declares the proxy hops to strip when resolving a client IP", () => {
+    expect(auth.options.advanced?.ipAddress?.trustedProxies).toEqual([
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "100.64.0.0/10",
+      "127.0.0.0/8",
+      "::1/128",
+      "fd00::/8",
+    ]);
+  });
+
+  it("leaves IP tracking on", () => {
+    expect(auth.options.advanced?.ipAddress?.disableIpTracking).toBeFalsy();
+  });
 });
