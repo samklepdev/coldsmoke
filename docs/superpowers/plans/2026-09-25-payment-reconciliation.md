@@ -31,7 +31,7 @@
 - Modify: `src/lib/payments/types.ts` (add a method to `PaymentsAdapter`)
 - Modify: `src/lib/payments/stripe.ts` (implement it)
 - Modify: `src/lib/payments/fake.ts` (implement it, plus a test helper)
-- Test: `src/lib/payments/fake.test.ts` (new)
+- Test: `src/lib/payments/fake.test.ts` — **already exists with 8 tests in two `describe` blocks. Append to it; do not overwrite it.**
 
 **Interfaces:**
 - Consumes: nothing.
@@ -39,12 +39,11 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Create `src/lib/payments/fake.test.ts`:
+`src/lib/payments/fake.test.ts` **already exists and holds 8 tests** covering intent creation, `PaymentIntentNotUpdatableError`, `succeededEvent` round-tripping, and refund idempotency. Add the block below to the end of it, keeping every existing test byte-for-byte. After this step the file has **13** tests, not 5. If yours is the only `describe` in the file, you have overwritten it — recover with `git show HEAD:src/lib/payments/fake.test.ts`.
+
+Append to `src/lib/payments/fake.test.ts`:
 
 ```ts
-import { describe, it, expect } from "vitest";
-import { FakePayments } from "./fake";
-
 async function intent(fake: FakePayments) {
   const { paymentIntentId } = await fake.createOrUpdateIntent({
     paymentIntentId: null,
@@ -168,7 +167,9 @@ Append to `src/lib/payments/fake.ts`:
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npx vitest run src/lib/payments/fake.test.ts && npx tsc --noEmit`
-Expected: 5 tests PASS, `tsc` clean. `tsc` matters here — it is what proves `StripePayments` also satisfies the widened interface.
+Expected: **13 tests PASS** — the 8 that were already there plus the 5 new ones — and `tsc` clean. A run reporting 5 means the pre-existing tests were overwritten rather than appended to; recover them from `git show HEAD:src/lib/payments/fake.test.ts` before going further.
+
+`tsc` matters here too: it is what proves `StripePayments` also satisfies the widened interface.
 
 - [ ] **Step 7: Commit**
 
