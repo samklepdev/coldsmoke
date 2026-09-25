@@ -190,7 +190,13 @@ git commit -m "feat: let the app ask Stripe for a payment intent's status"
 - Consumes: nothing from Task 1.
 - Produces: `completePaidOrder(orderId: string, cartId: string | null): Promise<void>`. Task 3 calls it.
 
-This is a pure move. The function's body, comments and swallow-and-log behaviour are preserved exactly; only its location changes, so that reconciliation cannot drift into a second, subtly different implementation of "what happens after payment".
+The function's **body** — control flow, the order of the two side effects, and the swallow-and-log catch — is preserved exactly, so that reconciliation cannot drift into a second, subtly different implementation of "what happens after payment".
+
+Its **prose** deliberately changes in three places, because the function is no longer webhook-exclusive. Copy the block below verbatim rather than the original:
+
+1. The log tag moves from `[webhook]` to `[payments]`. A reconciliation failure tagged `[webhook]` would be misattributed. Verified 2026-09-25 that nothing keys on the old string — no Sentry/Datadog/Logtail in the repo, and `.github/workflows/deploy-failure.yml` does not grep it.
+2. "The webhook is the **only** authoritative signal" loses its "only" — reconciliation asks Stripe directly, which is equally authoritative.
+3. A closing paragraph is added explaining why the module exists at all.
 
 - [ ] **Step 1: Create the extracted module**
 
