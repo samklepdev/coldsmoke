@@ -1,0 +1,63 @@
+name: uptime
+
+# Scheduled runs are best-effort on GitHub's side -- a */15 schedule is
+# routinely delivered late, sometimes by 15 minutes or more. That is fine for
+# noticing an outage; it is not a substitute for a real uptime service if the
+# store ever needs a response time measured in minutes rather than "sometime
+# soon". GitHub also disables scheduled workflows after 60 days with no
+# repository activity, which is the most likely way this stops running
+# silently.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: # so it can be run on demand from the Actions tab
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SITE_URL: ${{ vars.SITE_URL }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+
+    steps:
+      - name: Storefront responds
+        run: |
+          code=$(curl -sS -o /tmp/home.html -w '%{http_code}' \
+                   --max-time 30 --retry 2 --retry-delay 5 "$SITE_URL/")
+          echo "GET / -> $code"
+          test "$code" = "200"
+
+      # Proves the app can reach Postgres, not merely that the port is open.
+      - name: Database reachable
+        run: |
+          body=$(curl -sS --max-time 30 --retry 2 --retry-delay 5 \
+                   "$SITE_URL/api/health")
+          echo "GET /api/health -> $body"
+          echo "$body" | grep -q '"ok":true'
+
+      # The storefront can be perfectly healthy while the reservation sweep has
+      # silently stopped: Railway skips a cron tick when the previous run has
+      # not exited and reports nothing. Expired reservations piling up is the
+      # observable consequence.
+      - name: Reservation sweep is keeping up
+        run: |
+          code=$(curl -sS -o /tmp/res.json -w '%{http_code}' \
+                   --max-time 30 --retry 2 --retry-delay 5 \
+                   -H "Authorization: Bearer $CRON_SECRET" \
+                   "$SITE_URL/api/health/reservations")
+          cat /tmp/res.json; echo
+          if [ "$code" = "401" ]; then
+            echo "::error::CRON_SECRET in GitHub does not match Railway."
+            exit 1
+          fi
+          test "$code" = "200"
+
+      - name: Shop lists products
+        run: |
+          curl -sS --max-time 30 --retry 2 --retry-delay 5 "$SITE_URL/shop" \
+            | grep -q "Coldsmoke Eau de Toilette"
