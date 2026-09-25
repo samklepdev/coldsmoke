@@ -18,9 +18,9 @@
  * sentence.
  */
 export const BUSINESS = {
-  legalName: "Meridian Fragrance, LLC",
-  addressLine1: "123 Main Street",
-  addressLocality: "Houston, TX 77023",
+  legalName: "[legal name]",
+  addressLine1: "[street address]",
+  addressLocality: "[city, state ZIP]",
   supportEmail: "support@wearcoldsmoke.com",
 
   returnWindowDays: 30,

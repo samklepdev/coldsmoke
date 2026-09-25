@@ -12,18 +12,31 @@ describe("business details", () => {
    * filling one in ALSO fails here until it is removed from this list. The
    * list therefore cannot drift out of date.
    *
-   * The list reached [] on 2026-09-21: legalName, addressLine1,
-   * addressLocality and supportEmail were all filled in. The assertion stays
-   * rather than being deleted -- empty is now the meaningful state, and this
-   * is what fails if a new bracketed placeholder is ever introduced.
+   * The list reached [] on 2026-09-21 and went back to three entries on
+   * 2026-09-25. legalName, addressLine1 and addressLocality had all been
+   * filled in with plausible stand-ins -- "Meridian Fragrance, LLC",
+   * "123 Main Street", "Houston, TX 77023" -- and none carried a marker, so
+   * the list read empty while the deployed Privacy and Terms pages published
+   * a fabricated entity at a fabricated address. Exactly the hole described
+   * below, shipped.
    *
-   * What it does NOT catch: a value that reads like a stand-in but carries no
-   * bracketed marker. isPending only recognises brackets, so a plausible
+   * What this does NOT catch: a value that reads like a stand-in but carries
+   * no bracketed marker. isPending only recognises brackets, so a plausible
    * wrong answer settles silently. These four render into the Terms and
    * Privacy pages, so they want a human eye, not just a green test.
+   *
+   * supportEmail is deliberately NOT bracketed despite being unusable -- its
+   * domain is unregistered, so the address bounces. contact/actions.ts passes
+   * it to Resend as the `to`, so a bracketed value would not render a visible
+   * marker, it would break the contact form. Fix it by registering the
+   * domain, not by marking it pending.
    */
   it("has no details left waiting on the LLC", () => {
-    expect(PENDING_BUSINESS_DETAILS).toEqual([]);
+    expect(PENDING_BUSINESS_DETAILS).toEqual([
+      "addressLine1",
+      "addressLocality",
+      "legalName",
+    ]);
   });
 
   it("treats a bracketed marker as pending", () => {
