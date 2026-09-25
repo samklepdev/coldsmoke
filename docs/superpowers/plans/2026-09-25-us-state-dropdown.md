@@ -279,23 +279,39 @@ Create `src/components/ui/Select.module.css`:
 
 ```css
 /*
- * The one rule a select needs that an input does not.
+ * The rules a select needs that an input does not.
  *
  * `Select` borrows `.input` from Field.module.css so the two controls cannot
- * drift apart, but that rule's `padding: 0.8rem 0.9rem` was chosen to sit a
- * text cursor off the border. The browser insets the native chevron by the
- * same 0.9rem, which leaves the arrow crowded against the right edge.
+ * drift apart. What `.input` cannot supply is the chevron.
  *
- * `select.select` rather than `.select`: `.input` sets `padding` as a
- * shorthand, so an equal-specificity class would win or lose on stylesheet
- * order. Adding the element name makes this deterministic.
+ * The native chevron was tried first and abandoned: Chromium draws it at a
+ * fixed inset from the border and ignores `padding-right` entirely, so it sat
+ * against the edge no matter what padding the select carried. `appearance:
+ * none` drops it and the two gradients below draw a triangle we can place,
+ * 0.9rem off the right edge to match `.input`'s own horizontal padding.
+ *
+ * `select.select` rather than `.select`: `.input` sets `background` and
+ * `padding` as shorthands, so an equal-specificity class would win or lose on
+ * stylesheet order. The element name makes these deterministic, and leaves
+ * `.input`'s `background-color` in place -- only the image is overridden.
  */
 select.select {
+  appearance: none;
   padding-right: 2.1rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+    linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position:
+    calc(100% - 1.5rem) center,
+    calc(100% - 1.2rem) center;
+  background-size: 0.3rem 0.3rem;
+  background-repeat: no-repeat;
 }
 ```
 
-Verified in Chromium against the running app: the select reports `padding-right: 33.6px` against the ZIP input's `14.4px`, with both keeping `padding-left: 14.4px` so the row stays flush.
+Verified by screenshotting the rendered control in Chromium, not by reading a computed style. The first attempt at this rule set `padding-right` alone and measured `33.6px` on the element — the property applied, and the arrow did not move, because Chromium's native arrow ignores padding. Check the pixels for this one.
+
+Dropping the native chevron also settles a cross-browser inconsistency noted in Task 2's review: Firefox tinted the native arrow with the element's `color` while Chromium did not. The drawn triangle uses `--text-dim` everywhere.
 
 - [ ] **Step 2: Create the StateSelect control**
 
