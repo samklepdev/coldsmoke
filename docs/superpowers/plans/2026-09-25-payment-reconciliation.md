@@ -385,9 +385,16 @@ async function intentFor(orderId: string) {
   return paymentIntentId;
 }
 
+/**
+ * Summed, not counted. The header badge that read "Cart (2)" — the symptom
+ * that surfaced this bug — is a sum of quantities, and the fixture is a
+ * single row of quantity 2. Counting rows would assert 1 and quietly stop
+ * describing what the customer saw.
+ */
 const itemsLeft = async () =>
-  (await ctx.db.select().from(cartItems).where(eq(cartItems.cartId, cartId)))
-    .length;
+  (
+    await ctx.db.select().from(cartItems).where(eq(cartItems.cartId, cartId))
+  ).reduce((sum, line) => sum + line.quantity, 0);
 
 const statusOf = async (id: string) =>
   (await ctx.db.select().from(orders).where(eq(orders.id, id)))[0].status;
