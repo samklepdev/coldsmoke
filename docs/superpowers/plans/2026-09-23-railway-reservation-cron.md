@@ -277,7 +277,7 @@ git commit -m "chore: delete vercel.json and document Railway deployment"
 ### Task 3: Configure Railway
 
 **Files:**
-- Create: `railway.cron.json`
+- Create: `.railway/railway.ts`
 
 **Interfaces:**
 - Consumes: the `cron:release-reservations` script from Task 1.
@@ -289,57 +289,129 @@ Do this only after Task 1 is deployed, so the script exists on the branch Railwa
 
 - [ ] **Step 1: Write the config**
 
-The filename matters. It must **not** be `railway.json`: Railway reads that from the repo root by default, so the web service would pick it up and inherit `cronSchedule`, turning the storefront into a job that runs once and exits.
+Railway stops honouring `railway.json` / `railway.toml` on 2026-12-01, so the
+infrastructure is declared in TypeScript instead. Both JSON files this plan
+originally created were deleted on 2026-09-25.
 
-Create `railway.cron.json`:
+Write the file against the SDK's own type definitions, not the documentation:
+the docs page omits `cronSchedule` and `restartPolicyType` entirely, and both
+exist on `DeployConfig`. Reading the docs alone leads to the wrong conclusion
+that IaC cannot express a cron schedule.
 
-```json
-{
-  "$schema": "https://railway.com/railway.schema.json",
-  "deploy": {
-    "startCommand": "npm run cron:release-reservations",
-    "cronSchedule": "*/5 * * * *",
-    "restartPolicyType": "NEVER"
-  }
-}
+**Declare every resource, including Postgres.** `railway config apply` deletes
+resources the file omits, so leaving the database out destroys it.
+
+Create `.railway/railway.ts`:
+
+```ts
+import {
+  defineRailway,
+  github,
+  postgres,
+  preserve,
+  project,
+  service,
+} from "railway/iac";
+
+/**
+ * Railway infrastructure for Coldsmoke.
+ *
+ * Replaces railway.json and railway.cron.json, which Railway stops honouring
+ * on 2026-12-01.
+ *
+ * Every resource in the environment is declared here on purpose. `railway
+ * config apply` deletes resources a config omits, so leaving Postgres out of
+ * this file would destroy the production database.
+ *
+ * Secrets are declared with preserve(): the variable is asserted to exist and
+ * its current value in Railway is kept, so no key is ever written into the
+ * repository. DATABASE_URL is the exception -- it is a reference to the
+ * Postgres service, not a secret, and Railway resolves it at deploy time.
+ */
+export default defineRailway(() => {
+  const db = postgres("Postgres");
+
+  const web = service("extraordinary-beauty", {
+    source: github("samklepdev/coldsmoke", { branch: "main" }),
+
+    // Runs inside Railway's network before the new version goes live. The
+    // database has no public proxy, so this is the only place migrations can
+    // run unattended. Depends on tsx and dotenv being in `dependencies`.
+    preDeploy: "npm run db:migrate",
+
+    env: {
+      DATABASE_URL: db.env.DATABASE_URL,
+      BETTER_AUTH_SECRET: preserve(),
+      BETTER_AUTH_URL: preserve(),
+      CRON_SECRET: preserve(),
+      EMAIL_FROM: preserve(),
+      NEXT_PUBLIC_SITE_URL: preserve(),
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: preserve(),
+      RESEND_API_KEY: preserve(),
+      STRIPE_SECRET_KEY: preserve(),
+      STRIPE_WEBHOOK_SECRET: preserve(),
+    },
+  });
+
+  const cron = service("coldsmoke-cron", {
+    source: github("samklepdev/coldsmoke", { branch: "main" }),
+    start: "npm run cron:release-reservations",
+
+    deploy: {
+      // Five minutes is Railway's documented floor.
+      cronSchedule: "*/5 * * * *",
+
+      // NEVER, not a default worth accepting. Under ALWAYS or ON_FAILURE a
+      // persistently failing job restarts forever and stays in the running
+      // state -- and Railway skips a tick whenever the previous run is still
+      // alive, so one bad run would silently block every future execution.
+      restartPolicyType: "NEVER",
+    },
+
+    // DATABASE_URL only. CRON_SECRET authenticates the HTTP route, and this
+    // job talks to Postgres directly, so it has no use for it.
+    env: {
+      DATABASE_URL: db.env.DATABASE_URL,
+    },
+  });
+
+  return project("bubbly-patience", {
+    resources: [db, web, cron],
+  });
+});
 ```
 
-`restartPolicyType: "NEVER"` is not a default worth accepting blindly. Under `ALWAYS` or `ON_FAILURE`, a job that keeps failing would be restarted indefinitely and stay in the running state — and Railway skips a tick whenever the previous run is still alive, so a single persistent failure would silently block every future execution. With `NEVER`, a failed run simply fails, and the next tick retries from clean. Sweeps are independent, so nothing is lost by skipping one.
+`preserve()` asserts a variable exists and keeps whatever value Railway
+already holds, so no secret is written into the repository. `DATABASE_URL` is
+the exception -- it is a reference to the Postgres service, resolved at deploy
+time, not a secret.
 
-There is no `sleepApplication` key here on purpose. Serverless belongs to the web service; a cron container is started by the scheduler and must not be configured to sleep.
+`tsconfig.json` must exclude `.railway`. `include` is `**/*.ts` and `next
+build` runs `tsc`, while the `railway` SDK is a devDependency and Railway
+builds with `NODE_ENV=production` -- so a type-checked config file passes
+locally and fails on Railway.
 
-- [ ] **Step 1b: Give the web service its migration hook**
+Do not use `railway config migrate`. It emits a service named after the
+repository rather than the real service, ignores any secondary config file,
+and omits the database.
 
-The Railway Postgres has no public proxy, so migrations cannot be run from a laptop — and giving it one would expose the database to the internet to save a keystroke. They run inside Railway's network instead, before each deployment goes live.
+- [ ] **Step 1b: Apply it**
 
-Create `railway.json`:
+Run: `railway config plan`
 
-```json
-{
-  "$schema": "https://railway.com/railway.schema.json",
-  "deploy": {
-    "preDeployCommand": "npm run db:migrate"
-  }
-}
-```
-
-This one *is* at the root, because the web service is meant to read it. It carries no `cronSchedule`, so there is nothing for the web service to inherit that would stop it serving. The cron service points at `railway.cron.json` and is unaffected.
-
-This is what Task 1's promotion of `tsx` and `dotenv` to `dependencies` was for: `db:migrate` is a tsx entrypoint that imports `dotenv`, and it now runs in a production container where devDependencies are absent.
+Expected: `0 to destroy`. Anything else means a resource is missing from the
+file -- stop and add it rather than applying. Then `railway config apply`, and
+re-run `railway config plan` to confirm it reports no remaining changes.
 
 - [ ] **Step 2: Create the service**
 
 In the existing Railway project, add a new service from the same GitHub repository and branch. Name it `coldsmoke-cron`.
 
-- [ ] **Step 3: Point it at the config file**
+- [ ] **Step 3: Leave the Config File field empty**
 
-Settings → Config-as-code → Railway Config File:
+`.railway/railway.ts` is the single source of truth. The per-service **Railway Config File** field must be blank; a path left there competes with IaC for the same settings.
 
-```
-/railway.cron.json
-```
-
-The path is absolute from the repository root, independent of any Root Directory setting. This is the field that keeps the schedule off the web service. Leave the build command at its default — the service will build a Next.js app it never serves, about 35 seconds of waste per deploy, which is cheaper than maintaining a per-service divergence.
+Leave the build command at its default. The cron service builds a Next.js app it never serves, but that build happens once — scheduled executions reuse the cached image and start in seconds, so it does not eat into the five-minute window.
 
 - [ ] **Step 4: Point it at the database**
 
@@ -361,7 +433,7 @@ Expected: asleep. If it is awake, something in the cron path is reaching it over
 
 Check the web service's Settings → Deploy. Expected: **no** cron schedule, and a start command of `npm start`.
 
-This cannot happen while the config file is named `railway.cron.json` and only the cron service points at it, but it is worth one look — the failure is silent and total. A storefront with a cron schedule runs once, exits, and serves nothing.
+`.railway/railway.ts` declares `cronSchedule` only on `coldsmoke-cron`, so this cannot happen — but it is worth one look, because the failure is silent and total. A storefront with a cron schedule runs once, exits, and serves nothing.
 
 ---
 
