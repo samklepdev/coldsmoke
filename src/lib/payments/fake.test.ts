@@ -177,3 +177,55 @@ describe("FakePayments refunds", () => {
     expect(payments.refunds).toHaveLength(2);
   });
 });
+
+async function intent(fake: FakePayments) {
+  const { paymentIntentId } = await fake.createOrUpdateIntent({
+    paymentIntentId: null,
+    amountCents: 5100,
+    email: "buyer@example.com",
+    orderId: "order_1",
+    orderNumber: 1030,
+  });
+  return paymentIntentId;
+}
+
+describe("FakePayments.getIntentStatus", () => {
+  it("reports a fresh intent as unpaid", async () => {
+    const fake = new FakePayments();
+    const id = await intent(fake);
+
+    expect(await fake.getIntentStatus(id)).toBe("requires_payment_method");
+  });
+
+  it("reports succeeded once the intent has been marked so", async () => {
+    const fake = new FakePayments();
+    const id = await intent(fake);
+    fake.markSucceeded(id);
+
+    expect(await fake.getIntentStatus(id)).toBe("succeeded");
+  });
+
+  it("reports null for an intent it has never seen", async () => {
+    const fake = new FakePayments();
+
+    // Stripe 404s for an unknown id; the adapter turns that into null rather
+    // than an exception, so a caller can tell "no such intent" from "failed".
+    expect(await fake.getIntentStatus("pi_never_created")).toBeNull();
+  });
+
+  it("can be set to a status its own flow never produces", async () => {
+    const fake = new FakePayments();
+    const id = await intent(fake);
+    fake.setIntentStatus(id, "processing");
+
+    expect(await fake.getIntentStatus(id)).toBe("processing");
+  });
+
+  it("refuses to set a status on an intent that does not exist", async () => {
+    const fake = new FakePayments();
+
+    expect(() => fake.setIntentStatus("pi_nope", "succeeded")).toThrow(
+      /No fake intent/,
+    );
+  });
+});

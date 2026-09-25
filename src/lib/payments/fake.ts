@@ -69,6 +69,20 @@ export class FakePayments implements PaymentsAdapter {
     existing.status = "succeeded";
   }
 
+  async getIntentStatus(paymentIntentId: string): Promise<string | null> {
+    return this.intents.get(paymentIntentId)?.status ?? null;
+  }
+
+  /** Test helper: sets any status, including ones this fake's own flow never
+   * produces, so reconciliation's non-succeeded branches are reachable. */
+  setIntentStatus(paymentIntentId: string, status: string): void {
+    const existing = this.intents.get(paymentIntentId);
+    if (!existing) {
+      throw new Error(`No fake intent ${paymentIntentId} to set status on`);
+    }
+    existing.status = status;
+  }
+
   async refund({
     paymentIntentId,
     amountCents,

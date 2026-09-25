@@ -123,6 +123,20 @@ export class StripePayments implements PaymentsAdapter {
     return { refundId: refund.id };
   }
 
+  async getIntentStatus(paymentIntentId: string): Promise<string | null> {
+    try {
+      const intent = await getStripe().paymentIntents.retrieve(paymentIntentId);
+      return intent.status;
+    } catch (error) {
+      // An id Stripe does not know is an answer, not a failure: it means this
+      // order never had a real intent. Anything else -- network, auth, rate
+      // limit -- is a genuine failure and must propagate, so the caller can
+      // tell "definitely not paid" from "could not find out".
+      if (error instanceof Stripe.errors.StripeInvalidRequestError) return null;
+      throw error;
+    }
+  }
+
   verifyWebhook(rawBody: string, signature: string): WebhookEvent {
     const event = getStripe().webhooks.constructEvent(
       rawBody,
