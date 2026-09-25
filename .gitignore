@@ -43,7 +43,11 @@ next-env.d.ts
 
 # Idea
 .idea
+
 # playwright
 /test-results
 /playwright-report
 /blob-report
+
+# Local working notes, deliberately untracked. See TODO.md.
+TODO.md
