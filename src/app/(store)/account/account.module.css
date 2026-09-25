@@ -13,3 +13,20 @@
   color: var(--text-dim);
   text-decoration: none;
 }
+
+/* See the note in SiteHeader.module.css: the form is `display: contents` and
+   the button is reset so sign-out reads as another tab. */
+.tabs form {
+  display: contents;
+}
+
+.tabs button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.68rem;
+  letter-spacing: var(--track-mid);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+}

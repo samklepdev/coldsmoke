@@ -4266,8 +4266,27 @@ Create `src/components/SiteHeader.module.css`:
   color: var(--text-dim);
 }
 
-.nav a:hover {
+.nav a:hover,
+.nav button:hover {
   color: var(--text-bright);
+}
+
+/* `display: contents` so the form does not box the button out of the flex row. */
+.nav form {
+  display: contents;
+}
+
+/* Reset the button to look like its neighbouring links: it is a form control
+   only because sign-out must be a POST, not because it should look different. */
+.nav button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
 }
 
 .cart {
@@ -4282,6 +4301,7 @@ Create `src/components/SiteHeader.tsx`:
 
 ```tsx
 import Link from "next/link";
+import { SignOutButton } from "./SignOutButton";
 import { Wordmark } from "./ui/Wordmark";
 import styles from "./SiteHeader.module.css";
 
@@ -4305,6 +4325,7 @@ export function SiteHeader({
         <Link href={signedIn ? "/account/orders" : "/sign-in"}>
           {signedIn ? "Account" : "Sign in"}
         </Link>
+        {signedIn ? <SignOutButton /> : null}
       </nav>
 
       <Link href="/cart" className={styles.cart}>

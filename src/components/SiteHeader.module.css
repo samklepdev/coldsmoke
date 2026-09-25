@@ -21,8 +21,27 @@
   color: var(--text-dim);
 }
 
-.nav a:hover {
+.nav a:hover,
+.nav button:hover {
   color: var(--text-bright);
+}
+
+/* `display: contents` so the form does not box the button out of the flex row. */
+.nav form {
+  display: contents;
+}
+
+/* Reset the button to look like its neighbouring links: it is a form control
+   only because sign-out must be a POST, not because it should look different. */
+.nav button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
 }
 
 .cart {

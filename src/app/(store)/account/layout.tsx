@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requireSessionUser } from "@/lib/auth/session";
+import { SignOutButton } from "@/components/SignOutButton";
 import { ContentPage } from "@/components/content/ContentPage";
 import styles from "./account.module.css";
 
@@ -21,6 +22,7 @@ export default async function AccountLayout({
       <nav className={styles.tabs} aria-label="Account">
         <Link href="/account/orders">Orders</Link>
         <Link href="/account/addresses">Addresses</Link>
+        <SignOutButton />
       </nav>
       {children}
     </ContentPage>
