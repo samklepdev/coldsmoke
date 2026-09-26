@@ -115,7 +115,9 @@ afterAll(async () => {
  * otherwise deleting markOrderPaid's short-circuit would leave them green while
  * the code threw on every call.
  */
-let swallowed: ReturnType<typeof vi.spyOn>;
+let swallowed: ReturnType<typeof vi.spyOn> | undefined;
+/** Test-scoped, restored in afterEach so a failed assertion cannot leak it. */
+let boom: ReturnType<typeof vi.spyOn> | undefined;
 
 beforeEach(async () => {
   await ctx.truncate();
@@ -142,7 +144,11 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  swallowed.mockRestore();
+  // Optional-chained: if beforeEach failed before creating these, the real
+  // cause should surface rather than a TypeError from the teardown.
+  swallowed?.mockRestore();
+  boom?.mockRestore();
+  boom = undefined;
 });
 
 describe("reconcilePendingOrder", () => {
@@ -166,6 +172,7 @@ describe("reconcilePendingOrder", () => {
     expect(await statusOf(order.id)).toBe("paid");
     expect(await itemsLeft()).toBe(0);
     expect(sent).toEqual([order.id]);
+    expect(swallowed).not.toHaveBeenCalled();
   });
 
   it("leaves a still-processing payment alone", async () => {
@@ -259,6 +266,8 @@ describe("reconcilePendingOrder", () => {
     expect(await reconcilePendingOrder(withPi)).toBe(true);
     expect(await reconcilePendingOrder(withPi)).toBe(false);
     expect(sent).toEqual([order.id]);
+    // The second call is a ledger no-op, not a swallowed error.
+    expect(swallowed).not.toHaveBeenCalled();
   });
 
   it("swallows a payments failure rather than breaking the page", async () => {
@@ -269,7 +278,7 @@ describe("reconcilePendingOrder", () => {
       .set({ stripePaymentIntentId: pi })
       .where(eq(orders.id, order.id));
 
-    const boom = vi
+    boom = vi
       .spyOn(fake, "getIntentStatus")
       .mockRejectedValue(new Error("stripe is down"));
 
@@ -284,7 +293,6 @@ describe("reconcilePendingOrder", () => {
     // The other side of the silence assertions above: here the catch SHOULD
     // have fired, which is what makes "not called" meaningful elsewhere.
     expect(swallowed).toHaveBeenCalled();
-    boom.mockRestore();
   });
 
   it("namespaces its ledger key away from real Stripe event ids", () => {
