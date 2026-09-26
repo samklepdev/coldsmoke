@@ -1,4 +1,13 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+  vi,
+} from "vitest";
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
 import { products, inventory, carts, cartItems, orders } from "@/lib/db/schema";
@@ -30,6 +39,7 @@ const { reconcilePendingOrder, reconcileEventId } = await import(
   "@/lib/orders/reconcile"
 );
 const { markOrderPaid } = await import("@/lib/orders");
+const { completePaidOrder } = await import("@/lib/orders/completePaid");
 
 let cartId: string;
 let productId: string;
@@ -97,10 +107,21 @@ afterAll(async () => {
   await ctx.close();
 });
 
+/**
+ * reconcilePendingOrder swallows everything (it runs during a page render), so
+ * "returned false and changed nothing" is what a correct no-op AND an internal
+ * exception both look like from outside. Its one visible trace is the
+ * console.error in the catch, so the no-op tests assert that it stayed silent —
+ * otherwise deleting markOrderPaid's short-circuit would leave them green while
+ * the code threw on every call.
+ */
+let swallowed: ReturnType<typeof vi.spyOn>;
+
 beforeEach(async () => {
   await ctx.truncate();
   fake.intents.clear();
   sent.length = 0;
+  swallowed = vi.spyOn(console, "error").mockImplementation(() => {});
 
   const [bottle] = await ctx.db
     .insert(products)
@@ -118,6 +139,10 @@ beforeEach(async () => {
   const [cart] = await ctx.db.insert(carts).values({}).returning();
   cartId = cart.id;
   await ctx.db.insert(cartItems).values({ cartId, productId, quantity: 2 });
+});
+
+afterEach(() => {
+  swallowed.mockRestore();
 });
 
 describe("reconcilePendingOrder", () => {
@@ -161,6 +186,7 @@ describe("reconcilePendingOrder", () => {
     expect(await statusOf(order.id)).toBe("pending");
     expect(await itemsLeft()).toBe(2);
     expect(sent).toEqual([]);
+    expect(swallowed).not.toHaveBeenCalled();
   });
 
   it("leaves an unpaid intent alone", async () => {
@@ -178,6 +204,7 @@ describe("reconcilePendingOrder", () => {
 
     expect(changed).toBe(false);
     expect(await statusOf(order.id)).toBe("pending");
+    expect(swallowed).not.toHaveBeenCalled();
   });
 
   it("does nothing for an order with no payment intent", async () => {
@@ -187,6 +214,7 @@ describe("reconcilePendingOrder", () => {
 
     expect(changed).toBe(false);
     expect(await statusOf(order.id)).toBe("pending");
+    expect(swallowed).not.toHaveBeenCalled();
   });
 
   it("sends no second email when the webhook already completed the order", async () => {
@@ -198,10 +226,15 @@ describe("reconcilePendingOrder", () => {
       .where(eq(orders.id, order.id));
     fake.markSucceeded(pi);
 
-    // The webhook wins the race.
+    // The webhook wins the race — BOTH of its phases. Calling only
+    // markOrderPaid would leave `sent` empty for the trivial reason that the
+    // email lives in completePaidOrder, so the assertion below would read
+    // "reconciliation sent none" rather than the guarantee we actually want:
+    // exactly one email across the whole interleaving.
     const paid = await markOrderPaid(pi, "evt_real_1");
     expect(paid).not.toBeNull();
-    sent.length = 0;
+    await completePaidOrder(paid!.id, paid!.cartId);
+    expect(sent).toEqual([order.id]);
 
     const changed = await reconcilePendingOrder({
       ...order,
@@ -209,7 +242,8 @@ describe("reconcilePendingOrder", () => {
     });
 
     expect(changed).toBe(false);
-    expect(sent).toEqual([]);
+    expect(sent).toEqual([order.id]);
+    expect(swallowed).not.toHaveBeenCalled();
   });
 
   it("is safe to run twice — the ledger key stops the second", async () => {
@@ -247,6 +281,9 @@ describe("reconcilePendingOrder", () => {
 
     expect(changed).toBe(false);
     expect(await statusOf(order.id)).toBe("pending");
+    // The other side of the silence assertions above: here the catch SHOULD
+    // have fired, which is what makes "not called" meaningful elsewhere.
+    expect(swallowed).toHaveBeenCalled();
     boom.mockRestore();
   });
 
