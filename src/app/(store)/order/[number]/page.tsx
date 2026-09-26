@@ -6,6 +6,7 @@ import {
   formatOrderNumber,
 } from "@/lib/orders";
 import { readGrantedOrderIds } from "@/lib/orders/access";
+import { reconcilePendingOrder } from "@/lib/orders/reconcile";
 import { formatCents } from "@/lib/money";
 import { PendingNotice } from "./PendingNotice";
 import styles from "./page.module.css";
@@ -37,11 +38,27 @@ export default async function OrderPage({
   // Anyone without the cookie — including the customer on another device —
   // re-enters through /order-lookup, which re-establishes it.
   const granted = await readGrantedOrderIds();
-  const order = await findOrderByNumberForIds(orderNumber, granted);
+  let order = await findOrderByNumberForIds(orderNumber, granted);
 
   // 404, not a redirect to the lookup form: a distinguishable response would
   // confirm which order numbers exist.
   if (!order) notFound();
+
+  // A webhook that never arrived leaves a paid order reading "pending"
+  // forever, with the customer's cart still holding what they bought. Ask
+  // Stripe directly before rendering.
+  //
+  // During render rather than in a Server Action, so it works with JavaScript
+  // disabled like the rest of this store. Safe to run on every render because
+  // markOrderPaid's ledger makes it idempotent, and cheap because it only
+  // calls Stripe for orders that are still pending.
+  if (order.status === "pending") {
+    const reconciled = await reconcilePendingOrder(order);
+    if (reconciled) {
+      const fresh = await findOrderByNumberForIds(orderNumber, granted);
+      if (fresh) order = fresh;
+    }
+  }
 
   const address = order.shippingAddress;
 
