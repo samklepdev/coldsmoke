@@ -290,7 +290,7 @@ git commit -m "refactor: extract completePaidOrder so reconciliation can share i
 
 **Files:**
 - Create: `src/lib/orders/reconcile.ts`
-- Test: `src/app/(store)/order/reconcile.test.ts`
+- Test: `src/lib/orders/reconcile.test.ts`
 
 **Interfaces:**
 - Consumes: `getIntentStatus` (Task 1), `completePaidOrder` (Task 2), plus the existing `markOrderPaid(paymentIntentId, eventId)`.
@@ -305,7 +305,7 @@ Expected: the container reports healthy. Skip if already running.
 
 - [ ] **Step 2: Write the failing test**
 
-Create `src/app/(store)/order/reconcile.test.ts`:
+Create `src/lib/orders/reconcile.test.ts`:
 
 ```ts
 import {
@@ -615,7 +615,7 @@ describe("reconcilePendingOrder", () => {
 
 - [ ] **Step 3: Run the test to verify it fails**
 
-Run: `npx vitest run "src/app/(store)/order/reconcile.test.ts"`
+Run: `npx vitest run src/lib/orders/reconcile.test.ts`
 Expected: FAIL — cannot resolve `@/lib/orders/reconcile`.
 
 - [ ] **Step 4: Write the implementation**
@@ -695,13 +695,13 @@ export async function reconcilePendingOrder(order: Order): Promise<boolean> {
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `npx vitest run "src/app/(store)/order/reconcile.test.ts"`
+Run: `npx vitest run src/lib/orders/reconcile.test.ts`
 Expected: PASS — 8 tests.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/lib/orders/reconcile.ts "src/app/(store)/order/reconcile.test.ts"
+git add src/lib/orders/reconcile.ts src/lib/orders/reconcile.test.ts
 git commit -m "feat: reconcile a pending order against Stripe
 
 A webhook that never arrives left order 1030 pending with \$51.00
