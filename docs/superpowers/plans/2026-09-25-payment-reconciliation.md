@@ -821,12 +821,81 @@ import { reconcilePendingOrder } from "@/lib/orders/reconcile";
     // true at most once per order, and on the next request the status is no
     // longer "pending" so this block is skipped entirely.
     if (await reconcilePendingOrder(order)) {
-      redirect(`/order/${order.orderNumber}`);
+      // The marker drives RefreshAfterReconcile below. A cold load does not
+      // need it — the redirect is a second HTTP request, so the layout re-runs
+      // against the empty cart on its own — but a client-side navigation keeps
+      // the cached layout, and then only a router.refresh() corrects the badge.
+      redirect(`/order/${order.orderNumber}?reconciled=1`);
     }
   }
 ```
 
 `order` stays `const` — the redirect replaces the in-place re-read, so it is never reassigned. `redirect` comes from `next/navigation`, alongside the existing `notFound` import.
+
+- [ ] **Step 1b: Correct the cart badge after a client-side navigation**
+
+The redirect above is enough for a cold load — the browser makes a second
+request, so the layout re-renders against the emptied cart. It is NOT enough
+when the customer arrives by client-side navigation (from `/order-lookup`,
+which is exactly how a stranded customer gets here): the App Router keeps the
+cached layout for the same route segment, so the badge keeps the count it read
+before the cart was cleared. Both paths were verified in a browser against
+seeded pending orders; without this component the client-nav path rendered
+"Confirmed" beside "Cart (2)".
+
+Create `src/app/(store)/order/[number]/RefreshAfterReconcile.tsx`:
+
+```tsx
+"use client";
+
+import { useEffect } from "react";
+import { useRouter, usePathname } from "next/navigation";
+
+/**
+ * Corrects the header's cart count after reconciliation emptied the cart.
+ *
+ * The page already redirects once reconciliation succeeds, which is enough for
+ * a cold load: the browser makes a second request and the layout renders against
+ * the empty cart. It is NOT enough when the customer arrived by client-side
+ * navigation — from /order-lookup, say — because the App Router keeps the cached
+ * layout for the same route segment, so the layout never re-runs and the badge
+ * keeps the count it read before the cart was cleared. That left "Confirmed"
+ * sitting next to "Cart (2)", which is the exact symptom reconciliation exists
+ * to fix.
+ *
+ * router.refresh() re-fetches the whole route including layouts, so the badge
+ * corrects itself. Then the marker is stripped from the URL with replaceState
+ * rather than a router call, so no second navigation happens and a reload does
+ * not refresh again.
+ *
+ * Progressive enhancement, deliberately: with JavaScript off nothing here runs,
+ * the order itself is still correct (that happened server-side), and the badge
+ * corrects on the customer's next page load.
+ */
+export function RefreshAfterReconcile() {
+  const router = useRouter();
+  const pathname = usePathname();
+
+  useEffect(() => {
+    router.refresh();
+    window.history.replaceState(null, "", pathname);
+  }, [router, pathname]);
+
+  return null;
+}
+```
+
+Render it from `page.tsx` under the `PendingNotice` line:
+
+```tsx
+      {reconciled && <RefreshAfterReconcile />}
+```
+
+and read the marker at the top of the component, alongside `params`:
+
+```tsx
+  const { reconciled } = await searchParams;
+```
 
 - [ ] **Step 2: Verify types and lint**
 

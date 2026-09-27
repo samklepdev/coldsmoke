@@ -9,6 +9,7 @@ import { readGrantedOrderIds } from "@/lib/orders/access";
 import { reconcilePendingOrder } from "@/lib/orders/reconcile";
 import { formatCents } from "@/lib/money";
 import { PendingNotice } from "./PendingNotice";
+import { RefreshAfterReconcile } from "./RefreshAfterReconcile";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = { title: "Your order" };
@@ -24,8 +25,10 @@ const STATUS_COPY: Record<string, string> = {
 
 export default async function OrderPage({
   params,
+  searchParams,
 }: PageProps<"/order/[number]">) {
   const { number } = await params;
+  const { reconciled } = await searchParams;
 
   const orderNumber = parseOrderNumber(number);
   if (orderNumber === null) notFound();
@@ -66,7 +69,11 @@ export default async function OrderPage({
     // true at most once per order, and on the next request the status is no
     // longer "pending" so this block is skipped entirely.
     if (await reconcilePendingOrder(order)) {
-      redirect(`/order/${order.orderNumber}`);
+      // The marker drives RefreshAfterReconcile below. A cold load does not
+      // need it — the redirect is a second HTTP request, so the layout re-runs
+      // against the empty cart on its own — but a client-side navigation keeps
+      // the cached layout, and then only a router.refresh() corrects the badge.
+      redirect(`/order/${order.orderNumber}?reconciled=1`);
     }
   }
 
@@ -80,6 +87,8 @@ export default async function OrderPage({
       <h1 className={styles.number}>{formatOrderNumber(order.orderNumber)}</h1>
 
       {order.status === "pending" && <PendingNotice />}
+
+      {reconciled && <RefreshAfterReconcile />}
 
       {order.status === "paid" && (
         <p className={styles.thanks}>
