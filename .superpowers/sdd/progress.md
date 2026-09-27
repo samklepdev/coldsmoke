@@ -718,3 +718,404 @@ TESTING HAZARD HIT AGAIN, IN MY OWN TEST:
 
 Verified: 256 tests / 19 files, tsc clean, lint clean, build 10 routes,
 e2e 7/7 INCLUDING the real Stripe payment with stripe listen forwarding.
+
+# Coldsmoke — US State Dropdown
+
+Plan: docs/superpowers/plans/2026-09-25-us-state-dropdown.md
+Spec: docs/superpowers/specs/2026-09-25-us-state-dropdown-design.md
+Branch: feat/state-dropdown
+Base commit: 2f86dc4
+Started: 2026-09-25
+
+## Pre-flight note
+The plan deliberately duplicates the 4-line zod `state` field in both server
+actions rather than sharing it, to keep `lib/addresses/states.ts` zod-free and
+out of the client bundle. Reasoned in spec §4 and approved. Reviewers may flag
+it as duplication; if they do, it goes to the human, not a silent fix.
+
+## Progress
+Task 1: complete (commits 2f86dc4..7548efa, review clean)
+  - states.ts byte-for-byte with the plan block; 6/6 tests.
+  - Reviewer hand-checked all 51 code/name pairs against USPS: all correct.
+    (No test can catch a wrong code, so this was the real gate.)
+  - No findings at any severity.
+Task 2: complete (commits 7548efa..8492529, review clean)
+  - Select.tsx + StateSelect.tsx, both byte-for-byte with the plan. tsc + lint clean.
+  - No unit test by design (vitest is node env, no jsdom/testing-library);
+    reviewer judged that reasoning sound.
+  - Reviewer's WARNING item: could not verify from this diff that Tasks 3/4
+    actually pass defaultValue/error into StateSelect. CONTROLLER TO CONFIRM
+    in the Task 3 and Task 4 diffs.
+  - Minor, deferred to final review:
+    1. Native chevron colour tracks CSS `color` in Firefox but not
+       Chromium/WebKit — cosmetic, and keeping the native chevron was the
+       documented choice.
+    2. StateSelect has no guard for a defaultValue outside US_STATES; it
+       falls back to the disabled placeholder. Safe only because callers
+       pass zod-validated codes.
+Task 3: committed b76b560 (review in flight at time of writing)
+  - Schema, CheckoutForm, unit tests, and BOTH e2e fill sites done.
+  - Implementer reported DONE_WITH_CONCERNS: `npm test` is red on
+    src/test/plan-drift.test.ts only. Correct and expected — reconciling is
+    Task 5's job. Verified by the implementer via git stash that the tree was
+    177/177 clean before Task 3.
+  - PLAN ERROR FOUND BY IMPLEMENTER (good catch): Task 5's brief called the
+    older-plan drift "Append-style subsequence" checks. They are actually full
+    `Create` blocks compared byte for byte. Plan Task 5 Step 2 has been
+    rewritten with the accurate file->plan mapping; brief must be regenerated
+    before dispatching Task 5.
+  - Drift now 4 files (the 4th, account/addresses/actions.ts, is Task 4's
+    in-flight edit). Owning plans: 2026-09-19-coldsmoke-storefront-checkout
+    (checkout actions.ts, CheckoutForm.tsx, e2e), 2026-09-20-customer-accounts
+    (account actions.ts), and e2e is also declared in 2026-09-20-cart-quantity-stepper.
+Task 3: complete (commits 8492529..b76b560, review Approved)
+  - Reviewer independently re-verified the zod edge cases against zod 4.6.5
+    (missing key, "", "mt", "XX") and the StateCode -> Address.state type flow.
+  - Confirmed the `normalises a lowercase state` test survived UNEDITED, which
+    is the evidence the swap did not change stored data.
+  - Reviewer's one "Important" finding (report describes an unrelated admin
+    task) is VOID: it read a STALE task-3-report.md left by an earlier plan's
+    run in this shared workspace, before the implementer overwrote it. The
+    real report is dated today with proper RED/GREEN evidence. Stale
+    task-4/5-report.md removed to stop this recurring.
+  - Resolved Task 2's open WARNING for checkout: StateSelect hardcodes
+    name="state" and label="State"; CheckoutForm passes only `error`, and
+    correctly no defaultValue (that form never re-seeded). Task 4 still to
+    confirm for the address form.
+  - Minor, deferred to final review: no unit test for a missing or empty
+    `state` key at checkout (behaviour verified correct out-of-band).
+Task 4: complete (commits b76b560..01758c9, review Approved, zero findings)
+  - Reviewer traced both named risks through real code paths: the test mocks
+    reach genuine Postgres writes (not a no-op mock), and the re-seed
+    correctly reselects the chosen state after a rejected submit.
+  - This CLOSES Task 2's open WARNING item for the address form.
+  - Drift now 5 files; AddressForm.tsx added. Owning plan for both account
+    files is 2026-09-20-customer-accounts.md.
+
+Out-of-band user request (not from the plan): the native chevron sat hard
+against the select's right edge, because `.input`'s padding was sized for a
+text cursor. Added src/components/ui/Select.module.css with a single
+`select.select { padding-right: 2.1rem }` rule and wired it into Select.tsx.
+Element+class specificity is deliberate: `.input` sets `padding` as a
+shorthand, so an equal-specificity class would win or lose on stylesheet
+order. tsc + lint clean. This changes Select.tsx, so Task 5 must also
+refresh THIS plan's Select.tsx block and add the new CSS file.
+Task 5: complete (commits c4b142b, 966bfbd)
+  - Drift guard 5 -> 0. Verified independently: Task 5's ONLY change under
+    src/ is the single PLANS line. The Select.* changes in that commit range
+    are the controller's chevron fix, not Task 5's.
+  - Stale plans updated: 2026-09-19-storefront-checkout (checkout actions.ts,
+    CheckoutForm.tsx, e2e), 2026-09-20-customer-accounts (account actions.ts
+    + AddressForm.tsx -- the latter was missing from my mapping table, agent
+    caught it), 2026-09-20-cart-quantity-stepper (e2e).
+  - FULL VERIFICATION (controller-run): 562 tests / 47 files pass, tsc clean,
+    lint clean, e2e 18 passed + 1 expected skip.
+
+Chevron fix, round 2 (commit 8a5893e): the FIRST fix (01682b6) did not work.
+It set padding-right and I "verified" it by asserting computed style 33.6px.
+Chromium draws the native select arrow at a fixed inset and ignores padding,
+so the property applied and nothing moved. Lesson: that was measuring a proxy,
+not the reported symptom. Round 2 uses appearance:none + two gradients, and
+was verified by screenshotting the rendered control. User confirmed fixed.
+Side benefit: removes the Firefox/Chromium native-arrow colour difference
+that Task 2's review flagged as Minor.
+
+# Coldsmoke — Payment Reconciliation
+
+Plan: docs/superpowers/plans/2026-09-25-payment-reconciliation.md
+Spec: docs/superpowers/specs/2026-09-25-payment-reconciliation-design.md
+Branch: fix/payment-reconciliation
+Base commit: 4e680b5
+Started: 2026-09-25
+
+## Why
+Order 1030: pi_3UJe42C4O5W0d4Lo3Vq1CSNv reports succeeded / amount_received
+5100, but the order is still `pending`. No stripe listen was forwarding, and
+the webhook is the ONLY path that marks an order paid or clears the cart.
+The "cart still shows (2)" report was the symptom.
+
+## Pre-flight note
+Task 6 is operational, not code: it recovers order 1030 and sends a real
+confirmation email. The plan gates it on explicit user go-ahead. DO NOT
+dispatch it without asking.
+GO-AHEAD GRANTED by the user in conversation on 2026-09-25 ("yes, go ahead on
+1030 when you get there"). Conditional on getting there: run it only AFTER
+Tasks 4 and 5 are complete and full verification is green. Recovery must go
+through the real order page (plan Step 2), never a manual DB edit -- if it
+needs a DB edit, the feature does not work and that is the finding.
+Note EMAIL_FROM is still Resend's shared test sender (no verified domain), so
+the confirmation email's deliverability to a real inbox is not guaranteed;
+report what Resend actually returns rather than assuming it arrived.
+USER ASKED TO BE PINGED when Task 5 comes back green (push notification, not
+just a chat line). Send it on Task 5's full verification result -- green or
+not: if the suite fails, they still want to know at that moment.
+PR AUTHORISED by the user on 2026-09-25 ("open a PR when everything's green").
+Order: Task 4 -> Task 5 -> final whole-branch review (most capable model, one
+fix subagent for the whole findings list, incl. the deferred Minors collected
+above) -> Task 6 (1030 recovery) -> PR. Task 6 goes BEFORE the PR on purpose:
+recovering a real order through the real page is the strongest evidence the
+feature works, and it belongs in the PR body. "Everything's green" means the
+four verification commands, not just npm test.
+
+## stripe listen forwarder (set up 2026-09-25 14:3x, before Task 5's e2e)
+User: "don't count the skip as green, get stripe listen running."
+Running: pid 3171, `stripe listen --events payment_intent.succeeded,
+payment_intent.payment_failed,charge.refunded --forward-to
+localhost:3000/api/stripe/webhook`. Event list = exactly the three cases in
+webhook/route.ts.
+- CLI 1.51 REQUIRES --events/--all-snapshot/--all-thin; the first attempt
+  without them exited 1 immediately. A bare `stripe listen` no longer works.
+- Verified the CLI's listen secret EQUALS .env STRIPE_WEBHOOK_SECRET (compared
+  without printing either), so forwarded events pass signature verification.
+  The e2e's own guard explicitly does NOT check this, so it was worth checking.
+- Key passed via STRIPE_API_KEY in the env, not --api-key, to keep it out of
+  `ps` -- which matters because the e2e skip guard reads `ps -ax -o args=`.
+  Confirmed 0 processes hold the key value in argv.
+- TESTING HAZARD, hit twice: `ps ... | grep 'stripe listen'` and
+  `grep -c sk_test` both MATCH THEIR OWN COMMAND LINE. My first "2 listeners
+  forwarding correctly / key leaked twice" readings were entirely self-matches.
+  Correct method: snapshot ps to a FILE first, then grep the file (the grep
+  runs after the snapshot, so it cannot appear in it); for a secret, pass the
+  pattern via `grep -f patternfile` so the value never enters argv.
+- Playwright reuses an existing :3000 server locally (reuseExistingServer:
+  !CI). Port 3000 was free, so the e2e will start its own dev server.
+  Do NOT leave a dev server up across a `next build` -- playwright.config.ts
+  documents that combination serving pages whose Server Action POSTs no-op.
+Stale reports from the previous plan's run deleted at start (shared workspace
+reuses task-N-report.md names; a reviewer read a stale one last time).
+
+## Progress
+PLAN ERROR caught during Task 1 (controller): the plan declared
+`Create src/lib/payments/fake.test.ts`, but that file ALREADY EXISTED with 8
+tests (intent creation, PaymentIntentNotUpdatableError, succeededEvent
+round-trip, refund idempotency x3). The implementer followed the brief and
+overwrote them; caught in the working tree before any commit, originals safe
+at HEAD. Implementer told to restore + append, and to confirm 13 tests.
+Plan corrected: that block is now "Append to", not "Create" -- which also
+keeps Task 5's drift check correct (subsequence, not byte-for-byte).
+Verified the plan's three other Create files are genuinely new.
+Task 1: complete (commits 4e680b5..b9c1de1, review Approved)
+  - getIntentStatus on the port + stripe.ts (lazy getStripe, narrow catch:
+    null ONLY for StripeInvalidRequestError, re-throw otherwise) + fake.ts,
+    plus setIntentStatus test helper.
+  - 13 tests (8 pre-existing recovered + 5 new). Controller verified by
+    diffing test NAMES before/after: zero lost. Reviewer independently
+    confirmed the diff's only hunk starts at line 170, after all 8 originals.
+  - Minor, deferred to final review: (1) StripeInvalidRequestError covers
+    both unknown and malformed ids -- matches Stripe's real behaviour, noted
+    only if a later task must distinguish them; (2) new tests don't reuse the
+    existing suite's beforeEach setup idiom.
+Task 2: complete (commits 07d0e69..3bbfe60, review Approved)
+  - completePaidOrder moved to src/lib/orders/completePaid.ts. Reviewer
+    verified side-effect ORDER and catch/swallow semantics byte-identical,
+    private copy fully deleted, imports exactly right (findOrderById,
+    sendOrderConfirmation, clearCart removed; markOrderPaid still used at
+    route.ts:34). Webhook tests 12/12 with the test file UNTOUCHED.
+  - Two Important findings, both plan-mandated, ADJUDICATED by controller
+    with evidence rather than escalated:
+      * log tag [webhook] -> [payments]: KEPT. Verified nothing keys on it
+        (no Sentry/Datadog/Logtail anywhere; deploy-failure.yml does not
+        grep it). Tagging a reconciliation failure [webhook] would
+        misattribute it.
+      * doc comment expanded beyond "one sentence": KEPT, it explains why
+        the module exists.
+    Root cause was MY plan calling this a "pure move" while the brief
+    changed four things. Plan text corrected to state the three prose
+    changes and why.
+  - Minor for final review: completePaid.ts imports findOrderById from
+    "./index". Safe today (index.ts does not re-export completePaid), but
+    would cycle if anyone barrels it. Task 3 must import completePaidOrder
+    from @/lib/orders/completePaid directly, NOT via @/lib/orders.
+  - Minor: dropped "only" from the webhook-authoritative comment. Correct
+    once reconciliation exists.
+Task 3: committed 652d3ee (review in flight at time of writing)
+  - reconcilePendingOrder in src/lib/orders/reconcile.ts. Report at
+    .superpowers/sdd/task-3-report.md; review package
+    .superpowers/sdd/review-a8b885f..652d3ee.diff.
+  - Re-dispatched once: the first attempt's helper was wrong. Resumed with the
+    corrected helper, PLUS an explicit check that the no-double-email test
+    actually pins the guarantee rather than passing vacuously. It does: the
+    guarantee was mutation-tested (break markOrderPaid's ledger short-circuit
+    -> the test fails), so the test is load-bearing, not decorative.
+  - Controller commit 5a97fbd (plan text only): Task 6 Step 3's items_left
+    query must SUM(ci.quantity), not COUNT rows -- counting rows would read 0
+    only by accident for a 1-line order and would have "passed" while leaving
+    a 2-item cart behind. Same class of bug as the symptom that started this.
+  - Task 4 (order page wiring) dispatched in parallel: it consumes reconcile.ts
+    but touches only page.tsx + e2e/checkout.spec.ts, so no file overlap.
+
+BOTH PARALLEL AGENTS DIED SILENTLY (discovered ~9h later, 2026-09-25 23:27).
+Neither the Task 3 reviewer nor the Task 4 implementer ever reported; Task 4
+left page.tsx edited-but-uncommitted in the working tree for nine hours. A
+long-running `stripe listen` started in the same window was also killed. Do not
+assume a backgrounded agent here will survive; check for its artifacts
+(report file / commits) rather than waiting on a notification.
+User chose a HYBRID recovery: controller implements, agents review.
+Task 3: complete (commits a8b885f..652d3ee + fix 653688f, Approved after 1 fix)
+  - Review verdict on the original commit was NEEDS FIXES, two Importants, both
+    in the test file. The implementation (reconcile.ts) needed no change.
+  - MY EARLIER CLAIM WAS WRONG and is corrected here: I recorded that the
+    no-double-email guarantee was mutation-tested and "exactly right". It was
+    mutation-tested against ONE mutation (unconditional completePaidOrder) but
+    NOT against a disabled short-circuit. Reviewer traced it: the test's
+    webhook half left the order `paid`, so markOrderPaid returned null via the
+    STATUS short-circuit (index.ts:341-343), not the ledger key. Delete those
+    lines and markOrderPaid throws StrandedPaymentError, reconcile.ts:60
+    swallows it, changed===false and sent===[] -- identical observations, test
+    still GREEN. The same blind spot covered all four "leaves it alone" tests:
+    reconcilePendingOrder swallows everything, so "returned false, changed
+    nothing" is what a correct no-op AND an internal exception both look like.
+  - Fix (653688f, test file only): spy console.error in beforeEach, restore in
+    afterEach; the four no-op tests assert it was NOT called, the swallow test
+    asserts it WAS. And the webhook half now runs BOTH phases (markOrderPaid
+    then completePaidOrder) and asserts exactly ONE email across the
+    interleaving -- before, `sent` was empty for the trivial reason that the
+    email lives in completePaidOrder, so the test said "reconciliation sent
+    none", not the spec's "exactly one in total".
+  - Verified load-bearing by actually running the mutation: removing
+    index.ts:341-343 now FAILS the test. index.ts restored, git diff empty.
+  - Controller resolved both of the reviewer's ⚠️ items: (1) Task 4 does trust
+    the boolean -- it re-reads only when reconciled is true -- so a throw in
+    completePaidOrder after a successful markOrderPaid renders one stale
+    "Awaiting payment"; the NEXT render reads `paid` from the DB and self-heals,
+    so it is cosmetic and bounded. The lost confirmation email in that window is
+    the real cost and is the reviewer's Minor 1, inherited from the webhook's
+    identical two-phase hole. (2) The exactly-one-email end-to-end gap is what
+    the fix above closes.
+  - Minors for final review: (1) reconcile.ts:58 returns false after having
+    transitioned the order, contradicting its own docstring, and the email is
+    then lost permanently; (2) reconcile.ts:61 logs one message for a Stripe
+    outage, OrderNotFoundForPaymentError and StrandedPaymentError alike --
+    the latter two are money-without-an-order and the webhook deliberately
+    surfaces them as non-2xx; (3) no `canceled` case in the status tests;
+    (4) Postgres NOTICE noise makes test output non-pristine.
+Task 4: complete (commits 5a97fbd..a55bf01, controller-implemented)
+  - The dead agent's Step 1 edit was already correct and byte-equal to the
+    plan's block, placed after the notFound() guard. Steps 2-5 were missing.
+  - Controller finished: tsc + lint clean (this is the check that the `let`
+    reassignment still satisfies OrderWithItems), added the e2e cart assertion,
+    committed.
+  - E2E RAN FOR REAL, NOT SKIPPED: 19 passed including "a guest can buy a
+    bottle" (3.9s), with the forwarder delivering 1 real
+    payment_intent.succeeded. That is the evidence the plan demanded; a skip
+    would not have been.
+  - OBSERVED IN THAT RUN, relevant to Task 6: the confirmation email FAILED
+    with a Resend 422 -- it rejects buyer@example.com ("use our testing email
+    address instead of domains like example.com"). The order still completed,
+    which confirms completePaidOrder swallows email failures by design. For
+    order 1030 the address is real, so this specific 422 should not recur --
+    but EMAIL_FROM is still Resend's shared test sender, so do not claim
+    delivery without reading what Resend returns.
+  - npm test at this point: 569 passed, 6 failed, ALL SIX in plan-drift.test.ts.
+    Expected -- that is precisely Task 5's job.
+PLAN ERROR (Task 5's mapping table, found by controller): the table says
+`src/app/(store)/order/[number]/page.tsx` "is not in any plan, so it needs
+nothing." FALSE -- it has a full Create block at
+2026-09-19-coldsmoke-storefront-checkout.md:6415 and it IS one of the six
+failing cases. Drift is 6 files, not the predicted 5. Also note a grep trap
+here: `order/[number]/page.tsx` in a BRE pattern makes [number] a character
+class, so a naive `grep` finds nothing and appears to confirm the plan's claim.
+Use grep -F.
+PLAN ODDITY, not yet acted on: the plan puts Task 3's test at
+`src/app/(store)/order/reconcile.test.ts` -- a route directory -- while the
+module under test is `src/lib/orders/reconcile.ts`. Repo convention is
+colocation (src/lib/orders/reuse.test.ts, src/lib/payments/fake.test.ts).
+Functionally fine, vitest picks it up. Raised with the user rather than moved,
+since moving it changes a registered plan block.
+Task 3 re-review: APPROVED, both Importants closed. Reviewer independently
+re-traced index.ts:341-346 against the catch at reconcile.ts:60-67 and confirmed
+the mutation result, and confirmed the console.error spy cannot leak (recreated
+per test) or mask (a stray error now FAILS the four silent tests).
+  - Its 3 new Minors were fixed immediately (ad9bc1e) rather than deferred,
+    because Minor 1 was a gap MY fix introduced: the spy was file-wide but only
+    asserted in some tests, so the two success-path tests silently discarded
+    errors they used to print. Also moved the getIntentStatus spy's restore into
+    afterEach (a failed assertion could leave it rejecting for the rest of the
+    file) and optional-chained both restores.
+Task 5: complete (commit b1d5e0f)
+  - Synced 6 stale Create blocks (not 5) in 2026-09-19-storefront-checkout, and
+    re-synced this plan's reconcile.test.ts block TWICE, since the Task 3 fix
+    and then the Minor fixes each changed the shipped file after the first sync.
+    Sync done with a script (scratchpad/sync_drift.py) that mirrors the guard's
+    parser and REFUSES to rewrite a `plan-drift: partial` block or an
+    `Append to` block -- rewriting either would silently delete a documented
+    exception or convert a subsequence check into a false byte-for-byte pass.
+  - Guard 6 failures -> 0. 201 checks, up from 195: registering this plan added
+    its own Create blocks (completePaid.ts, reconcile.ts, reconcile.test.ts).
+  - FULL VERIFICATION, all four commands, controller-run:
+    586 tests / 48 files pass; tsc clean; lint clean; e2e 19 passed.
+    The payment e2e RAN (3.8s) with a live forwarder delivering 1 real
+    payment_intent.succeeded -- not a skip.
+Final whole-branch review dispatched (opus) with all 8 deferred items listed for
+explicit triage. Item 2 (lost email if completePaidOrder throws after
+markOrderPaid succeeded) flagged as the one most needing judgement.
+
+Test file MOVED on user instruction (commit a2fa7c2), closing deferred item 8:
+src/app/(store)/order/reconcile.test.ts -> src/lib/orders/reconcile.test.ts.
+All 5 plan references rewritten, including the shell quoting that existed only
+because the old path had parens and brackets. No relative imports to fix (the
+file uses @/ aliases throughout). 586/48 unchanged after the move, so it is
+still being collected; guard still 201, since the block content did not change
+and the guard's "references no file that does not exist" case now sees the new
+path. NOTE: this landed AFTER the final review's range (4e680b5..b1d5e0f), so
+if that review cites the old path, that is why -- not a stale finding.
+Final review verdict: READY TO MERGE WITH FIXES, zero Criticals. Fixes applied
+in dabeb46: redirect after a successful reconcile (Important 1), completePaid.ts
+comment corrected to say the side effects are NOT retried (Important 2),
+distinct [reconcile][stranded-payment] tag (Important 3), 3s Stripe timeout on
+the render path (Important 5), reconcileEventId docstring corrected (distinct
+keys do NOT block each other -- the conditional update does), canceled test
+added, spec §7 now names the cancelled-order gap.
+Reviewer's Known-Item triage worth keeping: item 1 (barrel cycle) is a non-issue
+-- findOrderById is DEFINED in index.ts, so there is nowhere cleaner to import
+it from. Item 2's premise was wrong: completePaidOrder cannot throw (whole body
+in try/catch, and sendOrderConfirmation swallows its own errors), so the
+docstring contradiction was theoretical; the REAL risk is that the side effects
+are unretryable once the status flips. Open follow-up: a completedAt column is
+the only thing that would make "recoverable" true.
+
+Task 6: order 1030 RECOVERED (2026-09-27 01:29:30 UTC), through the real page,
+no DB edit. status paid, paid_at set, items_left 0, reconcile:pi_3UJe42... row
+present. Two findings came out of doing it for real:
+  1. THE REDIRECT FIX IS INCOMPLETE. On the client-side navigation that did the
+     reconciliation (/order-lookup -> server action redirect -> /order/1030),
+     the header still read "Cart (2)" beside "CONFIRMED". The App Router reuses
+     the cached layout for the same route segment, so redirect() does not make
+     the layout re-render. A subsequent full load reads "Cart" correctly, and a
+     full page load that triggers reconciliation should be fixed by the redirect
+     (HTTP-level second request) -- but that last part is REASONED, NOT
+     VERIFIED, and cannot be verified on 1030 again because reconciliation is
+     once-per-order. Server state was correct throughout; this is a client
+     cache artifact, not a data bug.
+  2. THE CONFIRMATION EMAIL WAS NOT SENT. Resend rejected it: "You can only send
+     testing emails to your own email address (bayou.city.labs.hou@gmail.com)."
+     So the customer-visible half of the recovery did not happen. This is the
+     EMAIL_FROM stopgap, and it is the reviewer's "dropped email is the likely
+     failure, not the exotic one" landing on the very first real use.
+BADGE FIX COMPLETED AND VERIFIED IN A BROWSER (commit 6aac758). User chose to
+fix rather than defer. RefreshAfterReconcile.tsx calls router.refresh() once
+then strips the ?reconciled=1 marker via replaceState. Verified BOTH paths
+against seeded pending orders backed by real test-mode intents:
+  - client navigation (/order-lookup -> order page): was "Confirmed" + "CART (2)",
+    now "Confirmed" + "CART". This is the path 1030 took and the one that failed.
+  - cold load: correct with the redirect alone, as reasoned -- now actually
+    observed rather than assumed.
+Seeding method worth reusing: create a real test-mode PI (confirm with
+pm_card_visa for succeeded, or leave unconfirmed to grant the access cookie
+first and reconcile later on a genuine cold load), insert a pending order, and
+POINT IT AT THE BROWSER'S OWN CART. That last part is the trap -- an order
+pointing at its own seeded cart reproduces nothing, because the badge counts
+the browser's cart, so clearing a different cart leaves the badge untouched.
+TEST ARTIFACTS LEFT IN THE DEV DB: orders 1034 and 1035 (badge-test@example.com,
+now paid) plus a few orphan carts. Harmless but not cleaned up -- delete if
+they get in the way.
+Also observed: e2e order 1033 has BOTH an evt_ row and a reconcile: row, so
+reconciliation DOES fire during e2e and reaches markOrderPaid -- it just usually
+loses the race. That corrects the final review's claim that reconciliation never
+fires in e2e, and is a concrete instance of the reconcile:-rows-overcount minor.
+
+Task 6 BEFORE state confirmed (read-only): order 1030 pending, paid_at null,
+items_left 2, zero reconcile: ledger rows. Email on the order is gesg@emak.com
+-- not example.com, so the Resend 422 seen in the e2e will not recur for this
+one, but the domain looks throwaway and EMAIL_FROM is still Resend's shared
+test sender, so read what Resend returns rather than assuming delivery.
