@@ -1162,7 +1162,29 @@ reason="refund_restock", admin_user_id). restocked_quantity remains the GUARD;
 the ledger is history and is never read to authorise a restock.
 
 ## Progress
-(nothing executed yet)
+Task 1: complete (commits 290068a..27bb9c6, review Approved, zero findings)
+  - Two columns added: order_items.restocked_quantity (int, not null,
+    default 0) and orders.stock_decision_at (timestamptz, nullable). Both
+    verified present in the dev DB by the controller, not just claimed.
+  - Implementer read the generated migration before applying it, as the brief's
+    gate required, and reports exactly two ADD COLUMN statements.
+  - SECOND COMMIT WAS NOT IN THE TASK'S FILE LIST, and is correct: schema.ts is
+    a registered byte-for-byte Create block in
+    2026-09-19-coldsmoke-storefront-checkout.md, so adding columns turned the
+    suite red until that block was re-synced. +13 lines, that plan file only.
+    Controller verified the stat before accepting. This is the same drift-sync
+    work Task 6 does for this plan -- it just arrived early because schema.ts
+    belongs to an OLDER plan.
+  - 588/588 tests, 48 files. Reviewer's one WARNING was that it could not see
+    test output from the diff; CONTROLLER RESOLVED IT by re-running the suite
+    directly: 588/588, 48 files. The only stderr line is a pre-existing vitest
+    config-loader notice, not from this change.
+  - Reviewer independently verified the drift sync was byte-faithful by
+    comparing hunk-for-hunk against the schema.ts hunk (both +9 and +4, same
+    indentation and context) and confirmed no unrelated prose moved. Also
+    confirmed via 0008_snapshot.json that no extra index or check constraint
+    was smuggled in -- the restocked_quantity <= quantity bound is correctly
+    still absent, since it belongs in Task 2's UPDATE, not in the schema.
 
 ## Standing instructions from the user (2026-09-27)
 - "keep going through the rest of the tasks" -- run Tasks 1-6 continuously, no
