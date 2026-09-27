@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
 import {
   findOrderByNumberForIds,
@@ -38,7 +38,7 @@ export default async function OrderPage({
   // Anyone without the cookie — including the customer on another device —
   // re-enters through /order-lookup, which re-establishes it.
   const granted = await readGrantedOrderIds();
-  let order = await findOrderByNumberForIds(orderNumber, granted);
+  const order = await findOrderByNumberForIds(orderNumber, granted);
 
   // 404, not a redirect to the lookup form: a distinguishable response would
   // confirm which order numbers exist.
@@ -53,10 +53,20 @@ export default async function OrderPage({
   // markOrderPaid's ledger makes it idempotent, and cheap because it only
   // calls Stripe for orders that are still pending.
   if (order.status === "pending") {
-    const reconciled = await reconcilePendingOrder(order);
-    if (reconciled) {
-      const fresh = await findOrderByNumberForIds(orderNumber, granted);
-      if (fresh) order = fresh;
+    // Redirect rather than re-read in place. Reconciliation clears the cart,
+    // but the layout above already read its count — it does two fast local
+    // queries while this waits on a Stripe round trip, so it always wins the
+    // race. Re-reading only the order here would render "Confirmed" beside a
+    // stale "Cart (2)", which is the very symptom this feature exists to fix,
+    // and nothing would correct it: PendingNotice stops polling the moment the
+    // status is no longer pending, and revalidatePath cannot be called during
+    // a render. A fresh request re-renders the layout against the empty cart.
+    //
+    // This cannot loop: markOrderPaid's ledger means reconciliation returns
+    // true at most once per order, and on the next request the status is no
+    // longer "pending" so this block is skipped entirely.
+    if (await reconcilePendingOrder(order)) {
+      redirect(`/order/${order.orderNumber}`);
     }
   }
 

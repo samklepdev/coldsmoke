@@ -2781,6 +2781,14 @@ let stripeClient: Stripe | null = null;
  * so constructing at module scope would make STRIPE_SECRET_KEY a build-time
  * requirement. See the note on `db` in lib/db/client.ts.
  */
+/**
+ * Cap for Stripe calls made while rendering a page, rather than from a Server
+ * Action where a spinner is expected. 3s is comfortably above Stripe's p99 for
+ * a single retrieve and well under anyone's patience for a page that is
+ * supposed to answer "did my payment go through".
+ */
+const RENDER_PATH_TIMEOUT_MS = 3_000;
+
 function getStripe(): Stripe {
   if (!stripeClient) {
     const key = process.env.STRIPE_SECRET_KEY;
@@ -2888,7 +2896,19 @@ export class StripePayments implements PaymentsAdapter {
 
   async getIntentStatus(paymentIntentId: string): Promise<string | null> {
     try {
-      const intent = await getStripe().paymentIntents.retrieve(paymentIntentId);
+      // Short timeout because the only caller runs this during a page render.
+      // stripe-node's default is 80s, which turns a hung connection into a hung
+      // confirmation page — on the page a customer loads specifically to find
+      // out whether they were charged. "Degrade to Awaiting payment" has to mean
+      // degrade quickly; a thrown timeout is what the caller's catch expects.
+      //
+      // Empty params, then request options — `timeout` is a per-request option,
+      // and with one argument TS resolves it against PaymentIntentRetrieveParams.
+      const intent = await getStripe().paymentIntents.retrieve(
+        paymentIntentId,
+        {},
+        { timeout: RENDER_PATH_TIMEOUT_MS },
+      );
       return intent.status;
     } catch (error) {
       // An id Stripe does not know is an answer, not a failure: it means this
@@ -6417,7 +6437,7 @@ Create `src/app/(store)/order/[number]/page.module.css`:
 Create `src/app/(store)/order/[number]/page.tsx`:
 
 ```tsx
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
 import {
   findOrderByNumberForIds,
@@ -6457,7 +6477,7 @@ export default async function OrderPage({
   // Anyone without the cookie — including the customer on another device —
   // re-enters through /order-lookup, which re-establishes it.
   const granted = await readGrantedOrderIds();
-  let order = await findOrderByNumberForIds(orderNumber, granted);
+  const order = await findOrderByNumberForIds(orderNumber, granted);
 
   // 404, not a redirect to the lookup form: a distinguishable response would
   // confirm which order numbers exist.
@@ -6472,10 +6492,20 @@ export default async function OrderPage({
   // markOrderPaid's ledger makes it idempotent, and cheap because it only
   // calls Stripe for orders that are still pending.
   if (order.status === "pending") {
-    const reconciled = await reconcilePendingOrder(order);
-    if (reconciled) {
-      const fresh = await findOrderByNumberForIds(orderNumber, granted);
-      if (fresh) order = fresh;
+    // Redirect rather than re-read in place. Reconciliation clears the cart,
+    // but the layout above already read its count — it does two fast local
+    // queries while this waits on a Stripe round trip, so it always wins the
+    // race. Re-reading only the order here would render "Confirmed" beside a
+    // stale "Cart (2)", which is the very symptom this feature exists to fix,
+    // and nothing would correct it: PendingNotice stops polling the moment the
+    // status is no longer pending, and revalidatePath cannot be called during
+    // a render. A fresh request re-renders the layout against the empty cart.
+    //
+    // This cannot loop: markOrderPaid's ledger means reconciliation returns
+    // true at most once per order, and on the next request the status is no
+    // longer "pending" so this block is skipped entirely.
+    if (await reconcilePendingOrder(order)) {
+      redirect(`/order/${order.orderNumber}`);
     }
   }
 

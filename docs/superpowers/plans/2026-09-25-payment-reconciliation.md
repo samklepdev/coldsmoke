@@ -129,7 +129,19 @@ Append to `src/lib/payments/stripe.ts`:
 ```ts
   async getIntentStatus(paymentIntentId: string): Promise<string | null> {
     try {
-      const intent = await getStripe().paymentIntents.retrieve(paymentIntentId);
+      // Short timeout because the only caller runs this during a page render.
+      // stripe-node's default is 80s, which turns a hung connection into a hung
+      // confirmation page — on the page a customer loads specifically to find
+      // out whether they were charged. "Degrade to Awaiting payment" has to mean
+      // degrade quickly; a thrown timeout is what the caller's catch expects.
+      //
+      // Empty params, then request options — `timeout` is a per-request option,
+      // and with one argument TS resolves it against PaymentIntentRetrieveParams.
+      const intent = await getStripe().paymentIntents.retrieve(
+        paymentIntentId,
+        {},
+        { timeout: RENDER_PATH_TIMEOUT_MS },
+      );
       return intent.status;
     } catch (error) {
       // An id Stripe does not know is an answer, not a failure: it means this
@@ -218,10 +230,14 @@ import { clearCart } from "@/lib/cart";
  * processed and returns null — so the side effects never run anyway and the
  * only lasting result is a permanently failing event in the dashboard.
  *
- * Both effects are recoverable by other means: a missing confirmation email can
- * be resent, and a stale cart is corrected the next time the customer opens
- * their order — see `reconcilePendingOrder` in ./reconcile, which runs this
- * same function.
+ * What is NOT true is that these effects get retried. Nothing re-runs them:
+ * reconcilePendingOrder exits at `status !== "pending"`, and by the time this
+ * catch can fire markOrderPaid has already committed `paid`. So a failure here
+ * is permanent and needs manual intervention — and because clearCart runs
+ * first, a failure in it means the confirmation email is never even attempted.
+ * Do not write a reassuring comment here again without a mechanism behind it;
+ * making this recoverable needs a `completedAt` column so a later pass can tell
+ * "paid" from "paid and finished".
  *
  * Lives here rather than in the webhook route because it has two callers. A
  * second copy inside reconciliation is exactly how "what happens after
@@ -296,7 +312,7 @@ git commit -m "refactor: extract completePaidOrder so reconciliation can share i
 - Consumes: `getIntentStatus` (Task 1), `completePaidOrder` (Task 2), plus the existing `markOrderPaid(paymentIntentId, eventId)`.
 - Produces: `reconcilePendingOrder(order: Order): Promise<boolean>` — `true` only when this call transitioned the order to paid, so the caller knows to re-read it. `reconcileEventId(paymentIntentId: string): string`. Task 4 calls both.
 
-The test lives under `src/app/(store)/order/` rather than beside the source because it needs the Postgres harness and the repo keeps DB-backed action tests next to their routes. It is a unit test of the library function, not of a route.
+The test lives beside the source, at `src/lib/orders/reconcile.test.ts`. It is a unit test of the library function, not of a route, and the repo colocates those (`src/lib/orders/reuse.test.ts`, `src/lib/payments/fake.test.ts`). It was briefly placed under `src/app/(store)/order/` on the theory that DB-backed tests belong next to routes; needing the Postgres harness is not a reason to move a test away from its module.
 
 - [ ] **Step 1: Start the test database**
 
@@ -506,6 +522,30 @@ describe("reconcilePendingOrder", () => {
     expect(swallowed).not.toHaveBeenCalled();
   });
 
+  it("leaves a canceled payment alone", async () => {
+    // Named explicitly in the spec's constraint, and reachable only through
+    // setIntentStatus. Structurally it takes the same branch as "processing",
+    // but a later refactor to an allow-list could change that silently.
+    const order = await pendingOrder(null);
+    const pi = await intentFor(order.id);
+    await ctx.db
+      .update(orders)
+      .set({ stripePaymentIntentId: pi })
+      .where(eq(orders.id, order.id));
+    fake.setIntentStatus(pi, "canceled");
+
+    const changed = await reconcilePendingOrder({
+      ...order,
+      stripePaymentIntentId: pi,
+    });
+
+    expect(changed).toBe(false);
+    expect(await statusOf(order.id)).toBe("pending");
+    expect(await itemsLeft()).toBe(2);
+    expect(sent).toEqual([]);
+    expect(swallowed).not.toHaveBeenCalled();
+  });
+
   it("leaves an unpaid intent alone", async () => {
     const order = await pendingOrder(null);
     const pi = await intentFor(order.id);
@@ -625,17 +665,28 @@ Create `src/lib/orders/reconcile.ts`:
 ```ts
 import type { Order } from "@/lib/db/schema";
 import { getPayments } from "@/lib/payments";
-import { markOrderPaid } from "./index";
+import {
+  markOrderPaid,
+  OrderNotFoundForPaymentError,
+  StrandedPaymentError,
+} from "./index";
 import { completePaidOrder } from "./completePaid";
 
 /**
  * The ledger key reconciliation writes to `stripe_events`.
  *
- * Namespaced away from real Stripe event ids, which begin "evt_", so the two
- * paths cannot collide in the ledger and each still blocks the other from
- * doing the work twice. It doubles as a metric: `reconcile:` rows are orders
- * whose webhook never landed, and a growing count means webhook delivery
- * itself needs fixing rather than compensating for.
+ * Namespaced away from real Stripe event ids, which begin "evt_", so the key
+ * spaces cannot collide. Note what this does and does not buy: because the keys
+ * are DISTINCT, they do not block each other -- a webhook and a reconciliation
+ * for the same order both insert successfully. What makes the second one a
+ * no-op is markOrderPaid's conditional update (`... AND status = 'pending'`)
+ * returning no row. Do not "simplify" that guard away on the theory that the
+ * ledger key already covers it.
+ *
+ * It doubles as a rough metric: a growing count of `reconcile:` rows means
+ * webhook delivery itself needs fixing rather than compensating for. Rough
+ * because a row is written whenever reconciliation reaches markOrderPaid,
+ * including when the webhook won the race and the update matched nothing.
  */
 export function reconcileEventId(paymentIntentId: string): string {
   return `reconcile:${paymentIntentId}`;
@@ -650,8 +701,10 @@ export function reconcileEventId(paymentIntentId: string): string {
  * committed stock, and a cart still holding what they just bought. That
  * happened -- order 1030, $51.00 captured, status pending.
  *
- * Returns true only when THIS call transitioned the order, so the caller knows
- * to re-read it.
+ * Returns true only when THIS call transitioned the order. The caller should
+ * redirect rather than re-read in place: completing the order also empties the
+ * cart, and anything rendered above this point (the layout's cart count) was
+ * read before that happened.
  *
  * Never throws. It runs during a page render, and a Stripe outage must degrade
  * to "still Awaiting payment" rather than a 500 on the page where a customer is
@@ -683,6 +736,23 @@ export async function reconcilePendingOrder(order: Order): Promise<boolean> {
     await completePaidOrder(paid.id, paid.cartId);
     return true;
   } catch (error) {
+    // Money-without-an-order gets its own tag. The webhook turns these two into
+    // a non-2xx so Stripe retries and they surface in the dashboard; here there
+    // is no retry and no dashboard, so reconciliation is the only thing that
+    // ever sees them. Logged identically to a network blip they would be
+    // invisible, and they are not recoverable once the stock is released.
+    if (
+      error instanceof StrandedPaymentError ||
+      error instanceof OrderNotFoundForPaymentError
+    ) {
+      console.error("[reconcile][stranded-payment] captured money has no payable order", {
+        orderId: order.id,
+        paymentIntentId,
+        error,
+      });
+      return false;
+    }
+
     console.error("[reconcile] could not reconcile order", {
       orderId: order.id,
       paymentIntentId,
@@ -738,15 +808,25 @@ import { reconcilePendingOrder } from "@/lib/orders/reconcile";
   // markOrderPaid's ledger makes it idempotent, and cheap because it only
   // calls Stripe for orders that are still pending.
   if (order.status === "pending") {
-    const reconciled = await reconcilePendingOrder(order);
-    if (reconciled) {
-      const fresh = await findOrderByNumberForIds(orderNumber, granted);
-      if (fresh) order = fresh;
+    // Redirect rather than re-read in place. Reconciliation clears the cart,
+    // but the layout above already read its count — it does two fast local
+    // queries while this waits on a Stripe round trip, so it always wins the
+    // race. Re-reading only the order here would render "Confirmed" beside a
+    // stale "Cart (2)", which is the very symptom this feature exists to fix,
+    // and nothing would correct it: PendingNotice stops polling the moment the
+    // status is no longer pending, and revalidatePath cannot be called during
+    // a render. A fresh request re-renders the layout against the empty cart.
+    //
+    // This cannot loop: markOrderPaid's ledger means reconciliation returns
+    // true at most once per order, and on the next request the status is no
+    // longer "pending" so this block is skipped entirely.
+    if (await reconcilePendingOrder(order)) {
+      redirect(`/order/${order.orderNumber}`);
     }
   }
 ```
 
-The declaration a few lines above changes from `const order = await findOrderByNumberForIds(...)` to `let order = await findOrderByNumberForIds(...)`.
+`order` stays `const` — the redirect replaces the in-place re-read, so it is never reassigned. `redirect` comes from `next/navigation`, alongside the existing `notFound` import.
 
 - [ ] **Step 2: Verify types and lint**
 

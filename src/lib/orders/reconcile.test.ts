@@ -196,6 +196,30 @@ describe("reconcilePendingOrder", () => {
     expect(swallowed).not.toHaveBeenCalled();
   });
 
+  it("leaves a canceled payment alone", async () => {
+    // Named explicitly in the spec's constraint, and reachable only through
+    // setIntentStatus. Structurally it takes the same branch as "processing",
+    // but a later refactor to an allow-list could change that silently.
+    const order = await pendingOrder(null);
+    const pi = await intentFor(order.id);
+    await ctx.db
+      .update(orders)
+      .set({ stripePaymentIntentId: pi })
+      .where(eq(orders.id, order.id));
+    fake.setIntentStatus(pi, "canceled");
+
+    const changed = await reconcilePendingOrder({
+      ...order,
+      stripePaymentIntentId: pi,
+    });
+
+    expect(changed).toBe(false);
+    expect(await statusOf(order.id)).toBe("pending");
+    expect(await itemsLeft()).toBe(2);
+    expect(sent).toEqual([]);
+    expect(swallowed).not.toHaveBeenCalled();
+  });
+
   it("leaves an unpaid intent alone", async () => {
     const order = await pendingOrder(null);
     const pi = await intentFor(order.id);

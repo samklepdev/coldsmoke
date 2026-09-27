@@ -1,16 +1,27 @@
 import type { Order } from "@/lib/db/schema";
 import { getPayments } from "@/lib/payments";
-import { markOrderPaid } from "./index";
+import {
+  markOrderPaid,
+  OrderNotFoundForPaymentError,
+  StrandedPaymentError,
+} from "./index";
 import { completePaidOrder } from "./completePaid";
 
 /**
  * The ledger key reconciliation writes to `stripe_events`.
  *
- * Namespaced away from real Stripe event ids, which begin "evt_", so the two
- * paths cannot collide in the ledger and each still blocks the other from
- * doing the work twice. It doubles as a metric: `reconcile:` rows are orders
- * whose webhook never landed, and a growing count means webhook delivery
- * itself needs fixing rather than compensating for.
+ * Namespaced away from real Stripe event ids, which begin "evt_", so the key
+ * spaces cannot collide. Note what this does and does not buy: because the keys
+ * are DISTINCT, they do not block each other -- a webhook and a reconciliation
+ * for the same order both insert successfully. What makes the second one a
+ * no-op is markOrderPaid's conditional update (`... AND status = 'pending'`)
+ * returning no row. Do not "simplify" that guard away on the theory that the
+ * ledger key already covers it.
+ *
+ * It doubles as a rough metric: a growing count of `reconcile:` rows means
+ * webhook delivery itself needs fixing rather than compensating for. Rough
+ * because a row is written whenever reconciliation reaches markOrderPaid,
+ * including when the webhook won the race and the update matched nothing.
  */
 export function reconcileEventId(paymentIntentId: string): string {
   return `reconcile:${paymentIntentId}`;
@@ -25,8 +36,10 @@ export function reconcileEventId(paymentIntentId: string): string {
  * committed stock, and a cart still holding what they just bought. That
  * happened -- order 1030, $51.00 captured, status pending.
  *
- * Returns true only when THIS call transitioned the order, so the caller knows
- * to re-read it.
+ * Returns true only when THIS call transitioned the order. The caller should
+ * redirect rather than re-read in place: completing the order also empties the
+ * cart, and anything rendered above this point (the layout's cart count) was
+ * read before that happened.
  *
  * Never throws. It runs during a page render, and a Stripe outage must degrade
  * to "still Awaiting payment" rather than a 500 on the page where a customer is
@@ -58,6 +71,23 @@ export async function reconcilePendingOrder(order: Order): Promise<boolean> {
     await completePaidOrder(paid.id, paid.cartId);
     return true;
   } catch (error) {
+    // Money-without-an-order gets its own tag. The webhook turns these two into
+    // a non-2xx so Stripe retries and they surface in the dashboard; here there
+    // is no retry and no dashboard, so reconciliation is the only thing that
+    // ever sees them. Logged identically to a network blip they would be
+    // invisible, and they are not recoverable once the stock is released.
+    if (
+      error instanceof StrandedPaymentError ||
+      error instanceof OrderNotFoundForPaymentError
+    ) {
+      console.error("[reconcile][stranded-payment] captured money has no payable order", {
+        orderId: order.id,
+        paymentIntentId,
+        error,
+      });
+      return false;
+    }
+
     console.error("[reconcile] could not reconcile order", {
       orderId: order.id,
       paymentIntentId,
