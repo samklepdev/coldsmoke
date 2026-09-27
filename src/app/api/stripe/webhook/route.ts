@@ -3,10 +3,9 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { orders, stripeEvents } from "@/lib/db/schema";
 import { getPayments } from "@/lib/payments";
-import { markOrderPaid, findOrderById } from "@/lib/orders";
+import { markOrderPaid } from "@/lib/orders";
 import { recordRefund } from "@/lib/orders/refund";
-import { sendOrderConfirmation } from "@/lib/email";
-import { clearCart } from "@/lib/cart";
+import { completePaidOrder } from "@/lib/orders/completePaid";
 
 export async function POST(request: Request) {
   const signature = request.headers.get("stripe-signature");
@@ -82,41 +81,6 @@ export async function POST(request: Request) {
     // order behind it, and the money is then lost with nothing to reconcile.
     console.error("[webhook] handler failed", { type: event.type, error });
     return NextResponse.json({ error: "Handler failed" }, { status: 500 });
-  }
-}
-
-/**
- * Side effects that run after the payment has already been committed.
- *
- * These are deliberately isolated from the caller's catch. By the time we get
- * here markOrderPaid's transaction has COMMITTED: the order is paid, the stock
- * is committed, and the event id is durably in the ledger. Letting a failure
- * here escape would return 500 for a payment that actually succeeded, and the
- * retry Stripe then sends is a no-op — markOrderPaid sees the event already
- * processed and returns null — so the side effects never run anyway and the
- * only lasting result is a permanently failing event in the dashboard.
- *
- * Both effects are recoverable by other means: a stale cart is corrected on
- * the customer's next visit, and a missing confirmation email can be resent.
- */
-async function completePaidOrder(
-  orderId: string,
-  cartId: string | null,
-): Promise<void> {
-  try {
-    // Empty the cart that produced this order. The webhook is the only
-    // authoritative "payment succeeded" signal — clearing client-side after
-    // confirmPayment would leave a full cart behind whenever the customer
-    // closes the tab, letting them re-purchase by accident.
-    if (cartId) await clearCart(cartId);
-
-    const full = await findOrderById(orderId);
-    if (full) await sendOrderConfirmation(full);
-  } catch (error) {
-    console.error("[webhook] post-payment side effects failed", {
-      orderId,
-      error,
-    });
   }
 }
 

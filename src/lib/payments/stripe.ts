@@ -18,6 +18,14 @@ let stripeClient: Stripe | null = null;
  * so constructing at module scope would make STRIPE_SECRET_KEY a build-time
  * requirement. See the note on `db` in lib/db/client.ts.
  */
+/**
+ * Cap for Stripe calls made while rendering a page, rather than from a Server
+ * Action where a spinner is expected. 3s is comfortably above Stripe's p99 for
+ * a single retrieve and well under anyone's patience for a page that is
+ * supposed to answer "did my payment go through".
+ */
+const RENDER_PATH_TIMEOUT_MS = 3_000;
+
 function getStripe(): Stripe {
   if (!stripeClient) {
     const key = process.env.STRIPE_SECRET_KEY;
@@ -121,6 +129,32 @@ export class StripePayments implements PaymentsAdapter {
       { idempotencyKey },
     );
     return { refundId: refund.id };
+  }
+
+  async getIntentStatus(paymentIntentId: string): Promise<string | null> {
+    try {
+      // Short timeout because the only caller runs this during a page render.
+      // stripe-node's default is 80s, which turns a hung connection into a hung
+      // confirmation page — on the page a customer loads specifically to find
+      // out whether they were charged. "Degrade to Awaiting payment" has to mean
+      // degrade quickly; a thrown timeout is what the caller's catch expects.
+      //
+      // Empty params, then request options — `timeout` is a per-request option,
+      // and with one argument TS resolves it against PaymentIntentRetrieveParams.
+      const intent = await getStripe().paymentIntents.retrieve(
+        paymentIntentId,
+        {},
+        { timeout: RENDER_PATH_TIMEOUT_MS },
+      );
+      return intent.status;
+    } catch (error) {
+      // An id Stripe does not know is an answer, not a failure: it means this
+      // order never had a real intent. Anything else -- network, auth, rate
+      // limit -- is a genuine failure and must propagate, so the caller can
+      // tell "definitely not paid" from "could not find out".
+      if (error instanceof Stripe.errors.StripeInvalidRequestError) return null;
+      throw error;
+    }
   }
 
   verifyWebhook(rawBody: string, signature: string): WebhookEvent {

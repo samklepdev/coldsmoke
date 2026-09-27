@@ -220,4 +220,11 @@ test("a guest can buy a bottle", async ({ page }) => {
   // the paid transition rather than just the redirect. Requires
   // `stripe listen` to be forwarding; PendingNotice polls for ~10s.
   await expect(page.getByText("Confirmed")).toBeVisible({ timeout: 30_000 });
+
+  // Paying empties the cart. Asserting only "Confirmed" is why a paid order
+  // leaving a full cart behind reached a human instead of this suite: the
+  // status flipped correctly while the header still read "Cart (2)".
+  await expect(page.getByRole("link", { name: /^Cart/ })).toHaveText("Cart", {
+    timeout: 15_000,
+  });
 });

@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
 import {
   findOrderByNumberForIds,
@@ -6,8 +6,10 @@ import {
   formatOrderNumber,
 } from "@/lib/orders";
 import { readGrantedOrderIds } from "@/lib/orders/access";
+import { reconcilePendingOrder } from "@/lib/orders/reconcile";
 import { formatCents } from "@/lib/money";
 import { PendingNotice } from "./PendingNotice";
+import { RefreshAfterReconcile } from "./RefreshAfterReconcile";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = { title: "Your order" };
@@ -23,8 +25,10 @@ const STATUS_COPY: Record<string, string> = {
 
 export default async function OrderPage({
   params,
+  searchParams,
 }: PageProps<"/order/[number]">) {
   const { number } = await params;
+  const { reconciled } = await searchParams;
 
   const orderNumber = parseOrderNumber(number);
   if (orderNumber === null) notFound();
@@ -43,6 +47,36 @@ export default async function OrderPage({
   // confirm which order numbers exist.
   if (!order) notFound();
 
+  // A webhook that never arrived leaves a paid order reading "pending"
+  // forever, with the customer's cart still holding what they bought. Ask
+  // Stripe directly before rendering.
+  //
+  // During render rather than in a Server Action, so it works with JavaScript
+  // disabled like the rest of this store. Safe to run on every render because
+  // markOrderPaid's ledger makes it idempotent, and cheap because it only
+  // calls Stripe for orders that are still pending.
+  if (order.status === "pending") {
+    // Redirect rather than re-read in place. Reconciliation clears the cart,
+    // but the layout above already read its count — it does two fast local
+    // queries while this waits on a Stripe round trip, so it always wins the
+    // race. Re-reading only the order here would render "Confirmed" beside a
+    // stale "Cart (2)", which is the very symptom this feature exists to fix,
+    // and nothing would correct it: PendingNotice stops polling the moment the
+    // status is no longer pending, and revalidatePath cannot be called during
+    // a render. A fresh request re-renders the layout against the empty cart.
+    //
+    // This cannot loop: markOrderPaid's ledger means reconciliation returns
+    // true at most once per order, and on the next request the status is no
+    // longer "pending" so this block is skipped entirely.
+    if (await reconcilePendingOrder(order)) {
+      // The marker drives RefreshAfterReconcile below. A cold load does not
+      // need it — the redirect is a second HTTP request, so the layout re-runs
+      // against the empty cart on its own — but a client-side navigation keeps
+      // the cached layout, and then only a router.refresh() corrects the badge.
+      redirect(`/order/${order.orderNumber}?reconciled=1`);
+    }
+  }
+
   const address = order.shippingAddress;
 
   return (
@@ -53,6 +87,8 @@ export default async function OrderPage({
       <h1 className={styles.number}>{formatOrderNumber(order.orderNumber)}</h1>
 
       {order.status === "pending" && <PendingNotice />}
+
+      {reconciled && <RefreshAfterReconcile />}
 
       {order.status === "paid" && (
         <p className={styles.thanks}>

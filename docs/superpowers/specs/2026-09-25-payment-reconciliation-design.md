@@ -188,7 +188,20 @@ a human.
 
 Reconciliation fires when someone loads the order page. A customer who pays,
 closes the tab immediately, and whose webhook also failed stays stranded until
-they return to that page — via the emailed link or `/order-lookup`.
+they return to that page. Note that in exactly this scenario the emailed link is
+the thing that does not exist — the missing confirmation email is what defines
+it — so `/order-lookup` is the route that actually recovers them.
+
+**A cancelled order is not recovered, and is not even reported.** If the
+reservation sweep cancels an expired pending order before the customer returns,
+`reconcilePendingOrder` declines at its `status !== "pending"` guard: the page
+shows "Cancelled" for an order Stripe captured money on, with no log line
+anywhere. If the sweep lands in the narrow window *during* reconciliation's
+Stripe call, `markOrderPaid` throws `StrandedPaymentError` instead — that case
+is at least logged, under `[reconcile][stranded-payment]`. Today this is
+mitigated mainly by the sweep itself being unreliable on this deployment, which
+is not a mitigation anyone should rely on. Closing it properly needs the same
+`completedAt`-style bookkeeping as retrying side effects.
 
 That residual gap is accepted rather than solved, because closing it means a
 scheduled sweeper, and §2 explains why a sweeper is not trustworthy on this

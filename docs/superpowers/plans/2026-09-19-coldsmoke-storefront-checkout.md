@@ -2742,6 +2742,16 @@ export interface PaymentsAdapter {
     idempotencyKey: string;
   }): Promise<{ refundId: string }>;
 
+  /**
+   * The status Stripe currently reports for an intent, or null if there is no
+   * such intent.
+   *
+   * This is how the app asks "was this actually paid?" without a webhook. The
+   * webhook remains the normal path; this exists because a delivery that never
+   * arrives otherwise leaves a charged customer looking at an unpaid order.
+   */
+  getIntentStatus(paymentIntentId: string): Promise<string | null>;
+
   verifyWebhook(rawBody: string, signature: string): WebhookEvent;
 }
 ```
@@ -2771,6 +2781,14 @@ let stripeClient: Stripe | null = null;
  * so constructing at module scope would make STRIPE_SECRET_KEY a build-time
  * requirement. See the note on `db` in lib/db/client.ts.
  */
+/**
+ * Cap for Stripe calls made while rendering a page, rather than from a Server
+ * Action where a spinner is expected. 3s is comfortably above Stripe's p99 for
+ * a single retrieve and well under anyone's patience for a page that is
+ * supposed to answer "did my payment go through".
+ */
+const RENDER_PATH_TIMEOUT_MS = 3_000;
+
 function getStripe(): Stripe {
   if (!stripeClient) {
     const key = process.env.STRIPE_SECRET_KEY;
@@ -2876,6 +2894,32 @@ export class StripePayments implements PaymentsAdapter {
     return { refundId: refund.id };
   }
 
+  async getIntentStatus(paymentIntentId: string): Promise<string | null> {
+    try {
+      // Short timeout because the only caller runs this during a page render.
+      // stripe-node's default is 80s, which turns a hung connection into a hung
+      // confirmation page — on the page a customer loads specifically to find
+      // out whether they were charged. "Degrade to Awaiting payment" has to mean
+      // degrade quickly; a thrown timeout is what the caller's catch expects.
+      //
+      // Empty params, then request options — `timeout` is a per-request option,
+      // and with one argument TS resolves it against PaymentIntentRetrieveParams.
+      const intent = await getStripe().paymentIntents.retrieve(
+        paymentIntentId,
+        {},
+        { timeout: RENDER_PATH_TIMEOUT_MS },
+      );
+      return intent.status;
+    } catch (error) {
+      // An id Stripe does not know is an answer, not a failure: it means this
+      // order never had a real intent. Anything else -- network, auth, rate
+      // limit -- is a genuine failure and must propagate, so the caller can
+      // tell "definitely not paid" from "could not find out".
+      if (error instanceof Stripe.errors.StripeInvalidRequestError) return null;
+      throw error;
+    }
+  }
+
   verifyWebhook(rawBody: string, signature: string): WebhookEvent {
     const event = getStripe().webhooks.constructEvent(
       rawBody,
@@ -2979,6 +3023,20 @@ export class FakePayments implements PaymentsAdapter {
       throw new Error(`No fake intent ${paymentIntentId} to mark succeeded`);
     }
     existing.status = "succeeded";
+  }
+
+  async getIntentStatus(paymentIntentId: string): Promise<string | null> {
+    return this.intents.get(paymentIntentId)?.status ?? null;
+  }
+
+  /** Test helper: sets any status, including ones this fake's own flow never
+   * produces, so reconciliation's non-succeeded branches are reachable. */
+  setIntentStatus(paymentIntentId: string, status: string): void {
+    const existing = this.intents.get(paymentIntentId);
+    if (!existing) {
+      throw new Error(`No fake intent ${paymentIntentId} to set status on`);
+    }
+    existing.status = status;
   }
 
   async refund({
@@ -6007,10 +6065,9 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { orders, stripeEvents } from "@/lib/db/schema";
 import { getPayments } from "@/lib/payments";
-import { markOrderPaid, findOrderById } from "@/lib/orders";
+import { markOrderPaid } from "@/lib/orders";
 import { recordRefund } from "@/lib/orders/refund";
-import { sendOrderConfirmation } from "@/lib/email";
-import { clearCart } from "@/lib/cart";
+import { completePaidOrder } from "@/lib/orders/completePaid";
 
 export async function POST(request: Request) {
   const signature = request.headers.get("stripe-signature");
@@ -6086,41 +6143,6 @@ export async function POST(request: Request) {
     // order behind it, and the money is then lost with nothing to reconcile.
     console.error("[webhook] handler failed", { type: event.type, error });
     return NextResponse.json({ error: "Handler failed" }, { status: 500 });
-  }
-}
-
-/**
- * Side effects that run after the payment has already been committed.
- *
- * These are deliberately isolated from the caller's catch. By the time we get
- * here markOrderPaid's transaction has COMMITTED: the order is paid, the stock
- * is committed, and the event id is durably in the ledger. Letting a failure
- * here escape would return 500 for a payment that actually succeeded, and the
- * retry Stripe then sends is a no-op — markOrderPaid sees the event already
- * processed and returns null — so the side effects never run anyway and the
- * only lasting result is a permanently failing event in the dashboard.
- *
- * Both effects are recoverable by other means: a stale cart is corrected on
- * the customer's next visit, and a missing confirmation email can be resent.
- */
-async function completePaidOrder(
-  orderId: string,
-  cartId: string | null,
-): Promise<void> {
-  try {
-    // Empty the cart that produced this order. The webhook is the only
-    // authoritative "payment succeeded" signal — clearing client-side after
-    // confirmPayment would leave a full cart behind whenever the customer
-    // closes the tab, letting them re-purchase by accident.
-    if (cartId) await clearCart(cartId);
-
-    const full = await findOrderById(orderId);
-    if (full) await sendOrderConfirmation(full);
-  } catch (error) {
-    console.error("[webhook] post-payment side effects failed", {
-      orderId,
-      error,
-    });
   }
 }
 
@@ -6415,7 +6437,7 @@ Create `src/app/(store)/order/[number]/page.module.css`:
 Create `src/app/(store)/order/[number]/page.tsx`:
 
 ```tsx
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
 import {
   findOrderByNumberForIds,
@@ -6423,8 +6445,10 @@ import {
   formatOrderNumber,
 } from "@/lib/orders";
 import { readGrantedOrderIds } from "@/lib/orders/access";
+import { reconcilePendingOrder } from "@/lib/orders/reconcile";
 import { formatCents } from "@/lib/money";
 import { PendingNotice } from "./PendingNotice";
+import { RefreshAfterReconcile } from "./RefreshAfterReconcile";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = { title: "Your order" };
@@ -6440,8 +6464,10 @@ const STATUS_COPY: Record<string, string> = {
 
 export default async function OrderPage({
   params,
+  searchParams,
 }: PageProps<"/order/[number]">) {
   const { number } = await params;
+  const { reconciled } = await searchParams;
 
   const orderNumber = parseOrderNumber(number);
   if (orderNumber === null) notFound();
@@ -6460,6 +6486,36 @@ export default async function OrderPage({
   // confirm which order numbers exist.
   if (!order) notFound();
 
+  // A webhook that never arrived leaves a paid order reading "pending"
+  // forever, with the customer's cart still holding what they bought. Ask
+  // Stripe directly before rendering.
+  //
+  // During render rather than in a Server Action, so it works with JavaScript
+  // disabled like the rest of this store. Safe to run on every render because
+  // markOrderPaid's ledger makes it idempotent, and cheap because it only
+  // calls Stripe for orders that are still pending.
+  if (order.status === "pending") {
+    // Redirect rather than re-read in place. Reconciliation clears the cart,
+    // but the layout above already read its count — it does two fast local
+    // queries while this waits on a Stripe round trip, so it always wins the
+    // race. Re-reading only the order here would render "Confirmed" beside a
+    // stale "Cart (2)", which is the very symptom this feature exists to fix,
+    // and nothing would correct it: PendingNotice stops polling the moment the
+    // status is no longer pending, and revalidatePath cannot be called during
+    // a render. A fresh request re-renders the layout against the empty cart.
+    //
+    // This cannot loop: markOrderPaid's ledger means reconciliation returns
+    // true at most once per order, and on the next request the status is no
+    // longer "pending" so this block is skipped entirely.
+    if (await reconcilePendingOrder(order)) {
+      // The marker drives RefreshAfterReconcile below. A cold load does not
+      // need it — the redirect is a second HTTP request, so the layout re-runs
+      // against the empty cart on its own — but a client-side navigation keeps
+      // the cached layout, and then only a router.refresh() corrects the badge.
+      redirect(`/order/${order.orderNumber}?reconciled=1`);
+    }
+  }
+
   const address = order.shippingAddress;
 
   return (
@@ -6470,6 +6526,8 @@ export default async function OrderPage({
       <h1 className={styles.number}>{formatOrderNumber(order.orderNumber)}</h1>
 
       {order.status === "pending" && <PendingNotice />}
+
+      {reconciled && <RefreshAfterReconcile />}
 
       {order.status === "paid" && (
         <p className={styles.thanks}>
@@ -6916,6 +6974,13 @@ test("a guest can buy a bottle", async ({ page }) => {
   // the paid transition rather than just the redirect. Requires
   // `stripe listen` to be forwarding; PendingNotice polls for ~10s.
   await expect(page.getByText("Confirmed")).toBeVisible({ timeout: 30_000 });
+
+  // Paying empties the cart. Asserting only "Confirmed" is why a paid order
+  // leaving a full cart behind reached a human instead of this suite: the
+  // status flipped correctly while the header still read "Cart (2)".
+  await expect(page.getByRole("link", { name: /^Cart/ })).toHaveText("Cart", {
+    timeout: 15_000,
+  });
 });
 ```
 

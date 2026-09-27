@@ -65,5 +65,15 @@ export interface PaymentsAdapter {
     idempotencyKey: string;
   }): Promise<{ refundId: string }>;
 
+  /**
+   * The status Stripe currently reports for an intent, or null if there is no
+   * such intent.
+   *
+   * This is how the app asks "was this actually paid?" without a webhook. The
+   * webhook remains the normal path; this exists because a delivery that never
+   * arrives otherwise leaves a charged customer looking at an unpaid order.
+   */
+  getIntentStatus(paymentIntentId: string): Promise<string | null>;
+
   verifyWebhook(rawBody: string, signature: string): WebhookEvent;
 }
