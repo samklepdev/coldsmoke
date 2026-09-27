@@ -584,6 +584,15 @@ export const orders = pgTable(
     totalCents: integer("total_cents").notNull(),
     refundedCents: integer("refunded_cents").notNull().default(0),
 
+    // When an admin decided what happens to this order's stock -- set for
+    // EITHER decision, restock or write-off. Which one it was is already
+    // visible in the per-line restocked_quantity values, so encoding it twice
+    // would just create something that can contradict itself.
+    //
+    // A refunded order with this still null is awaiting a decision. That state
+    // is derived from these two columns and is deliberately not stored.
+    stockDecisionAt: timestamp("stock_decision_at", { withTimezone: true }),
+
     // .$type is type-only — no migration. Without it every read casts
     // `as Address` with nothing checking the shape.
     shippingAddress: jsonb("shipping_address").$type<Address>().notNull(),
@@ -632,6 +641,10 @@ export const orderItems = pgTable(
     unitPriceCents: integer("unit_price_cents").notNull(),
     quantity: integer("quantity").notNull(),
     totalCents: integer("total_cents").notNull(),
+    // Units returned to stock after a refund. Bounded by `quantity` in the
+    // UPDATE that increments it, which is what makes restocking idempotent
+    // without a lock -- a resubmitted form cannot inflate stock.
+    restockedQuantity: integer("restocked_quantity").notNull().default(0),
   },
   (t) => [index("order_items_order_id_idx").on(t.orderId)],
 );
