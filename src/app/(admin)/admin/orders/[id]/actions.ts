@@ -12,6 +12,8 @@ import {
   OrderNotFulfillableError,
   OrderNotRefundableError,
 } from "@/lib/orders/errors";
+import { restockRefundedOrder, writeOffOrderStock } from "@/lib/orders/restock";
+import { RestockNotAllowedError } from "@/lib/inventory";
 
 const schema = z.object({
   orderId: z.uuid(),
@@ -152,4 +154,93 @@ export async function refundAction(
     }
     throw error;
   }
+}
+
+export type StockState =
+  | { status: "idle" }
+  | { status: "restocked"; units: number }
+  | { status: "written-off" }
+  | { status: "error"; error: string };
+
+/**
+ * Quantities arrive as `quantity:<orderItemId>` fields, so the form can carry
+ * one input per line without the action needing to know the lines in advance.
+ */
+function parseLines(formData: FormData) {
+  const lines: { orderItemId: string; quantity: number }[] = [];
+
+  for (const [key, value] of formData.entries()) {
+    if (!key.startsWith("quantity:")) continue;
+
+    const quantity = Number(value);
+    // A non-numeric or negative entry is a broken form, not a request to
+    // remove stock -- refuse rather than quietly coercing it to zero.
+    if (!Number.isInteger(quantity) || quantity < 0) return null;
+
+    lines.push({ orderItemId: key.slice("quantity:".length), quantity });
+  }
+
+  return lines;
+}
+
+export async function restockAction(
+  _prev: StockState,
+  formData: FormData,
+): Promise<StockState> {
+  const admin = await requireAdminUser();
+
+  const orderId = z.uuid().safeParse(formData.get("orderId"));
+  if (!orderId.success) {
+    return { status: "error", error: "Unknown order." };
+  }
+
+  const lines = parseLines(formData);
+  if (!lines) {
+    return { status: "error", error: "Enter whole numbers of units." };
+  }
+
+  try {
+    await restockRefundedOrder({
+      orderId: orderId.data,
+      lines,
+      adminUserId: admin.id,
+    });
+  } catch (error) {
+    if (error instanceof RestockNotAllowedError) {
+      return { status: "error", error: error.message };
+    }
+    throw error;
+  }
+
+  revalidatePath(`/admin/orders/${orderId.data}`);
+  revalidatePath("/admin/orders");
+
+  const units = lines.reduce((total, line) => total + line.quantity, 0);
+  return { status: "restocked", units };
+}
+
+export async function writeOffAction(
+  _prev: StockState,
+  formData: FormData,
+): Promise<StockState> {
+  await requireAdminUser();
+
+  const orderId = z.uuid().safeParse(formData.get("orderId"));
+  if (!orderId.success) {
+    return { status: "error", error: "Unknown order." };
+  }
+
+  try {
+    await writeOffOrderStock({ orderId: orderId.data });
+  } catch (error) {
+    if (error instanceof RestockNotAllowedError) {
+      return { status: "error", error: error.message };
+    }
+    throw error;
+  }
+
+  revalidatePath(`/admin/orders/${orderId.data}`);
+  revalidatePath("/admin/orders");
+
+  return { status: "written-off" };
 }
