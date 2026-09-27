@@ -2228,6 +2228,13 @@ function parseLines(formData: FormData) {
     const orderItemId = key.slice("quantity:".length);
     if (!orderItemId) return null;
 
+    // orderItemId flows straight into eq(orderItems.id, ...) on a uuid
+    // column -- a malformed id (e.g. a corrupted field name) would otherwise
+    // reach Postgres and come back as an unhandled 22P02, surfacing to the
+    // admin as a raw 500 instead of the friendly refusal every other bad
+    // input on this form receives.
+    if (!z.uuid().safeParse(orderItemId).success) return null;
+
     const raw = typeof value === "string" ? value.trim() : "";
     // Blank, non-numeric, or negative is a broken form, not a request to
     // remove stock -- refuse rather than quietly coercing it to zero. (An

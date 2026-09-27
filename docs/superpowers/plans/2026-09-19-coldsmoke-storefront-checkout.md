@@ -2144,14 +2144,6 @@ describe("restockOrderItems", () => {
     return { order, item };
   }
 
-  async function stock() {
-    const [row] = await ctx.db
-      .select()
-      .from(inventory)
-      .where(eq(inventory.productId, productId));
-    return row;
-  }
-
   it("returns units to on_hand and records the movement", async () => {
     const { order, item } = await refundedOrder(2);
     const before = (await stock()).onHand;
@@ -2246,6 +2238,12 @@ describe("restockOrderItems", () => {
 
   it("leaves reserved untouched", async () => {
     const { order, item } = await refundedOrder(2);
+    // Seeded non-zero: starting from 0, this assertion could not tell
+    // "untouched" apart from "clamped to zero" by a GREATEST(reserved - n, 0).
+    await ctx.db
+      .update(inventory)
+      .set({ reserved: 1 })
+      .where(eq(inventory.productId, productId));
     const before = (await stock()).reserved;
 
     await ctx.db.transaction(async (tx) => {
@@ -2329,6 +2327,126 @@ describe("restockOrderItems", () => {
         );
       }),
     ).rejects.toThrow(RestockNotAllowedError);
+  });
+
+  /** A second product, independent of the fixture's `productId`. */
+  async function secondProduct(onHand: number) {
+    const [product] = await ctx.db
+      .insert(products)
+      .values({
+        slug: "test-parfum",
+        name: "Test Parfum",
+        description: "Test",
+        priceCents: 6000,
+        sku: "T-2",
+      })
+      .returning();
+    await ctx.db.insert(inventory).values({ productId: product.id, onHand });
+    return product.id;
+  }
+
+  async function addLine(orderId: string, forProductId: string, quantity: number) {
+    const [item] = await ctx.db
+      .insert(orderItems)
+      .values({
+        orderId,
+        productId: forProductId,
+        name: "Test Parfum",
+        unitPriceCents: 6000,
+        quantity,
+        totalCents: 6000 * quantity,
+      })
+      .returning();
+    return item;
+  }
+
+  // StockPanel emits one quantity:<id> input per order line and submits them
+  // together, so the ordinary production path runs this loop with two or
+  // more entries for any order with two products -- not an edge case, and
+  // every test above submits exactly one line.
+  it("restocks two lines for two different products without crossing them", async () => {
+    const { order, item } = await refundedOrder(2);
+    const productId2 = await secondProduct(5);
+    const item2 = await addLine(order.id, productId2, 3);
+
+    const before1 = (await stock()).onHand;
+    const [before2Row] = await ctx.db
+      .select()
+      .from(inventory)
+      .where(eq(inventory.productId, productId2));
+
+    await ctx.db.transaction(async (tx) => {
+      await restockOrderItems(
+        tx,
+        order.id,
+        [
+          { orderItemId: item.id, quantity: 2 },
+          { orderItemId: item2.id, quantity: 3 },
+        ],
+        "admin_1",
+      );
+    });
+
+    // Each product moved by its own quantity -- the second product's units
+    // were not credited to the first.
+    expect((await stock()).onHand).toBe(before1 + 2);
+    const [after2] = await ctx.db
+      .select()
+      .from(inventory)
+      .where(eq(inventory.productId, productId2));
+    expect(after2.onHand).toBe(before2Row.onHand + 3);
+
+    const ledger = await ctx.db.select().from(inventoryAdjustments);
+    expect(ledger).toHaveLength(2);
+    const deltaByProduct = Object.fromEntries(
+      ledger.map((row) => [row.productId, row.delta]),
+    );
+    expect(deltaByProduct[productId]).toBe(2);
+    expect(deltaByProduct[productId2]).toBe(3);
+  });
+
+  it("rolls back both lines when the second exceeds its bound", async () => {
+    const { order, item } = await refundedOrder(2);
+    const productId2 = await secondProduct(5);
+    // Ordered only 1 unit of the second product but the restock claims 5, so
+    // that line's bound check fails -- the whole transaction must roll back,
+    // including the first line, which would otherwise have succeeded alone.
+    const item2 = await addLine(order.id, productId2, 1);
+
+    const before1 = (await stock()).onHand;
+    const [before2Row] = await ctx.db
+      .select()
+      .from(inventory)
+      .where(eq(inventory.productId, productId2));
+
+    await expect(
+      ctx.db.transaction(async (tx) => {
+        await restockOrderItems(
+          tx,
+          order.id,
+          [
+            { orderItemId: item.id, quantity: 2 },
+            { orderItemId: item2.id, quantity: 5 },
+          ],
+          "admin_1",
+        );
+      }),
+    ).rejects.toThrow(RestockNotAllowedError);
+
+    expect((await stock()).onHand).toBe(before1);
+    const [after2] = await ctx.db
+      .select()
+      .from(inventory)
+      .where(eq(inventory.productId, productId2));
+    expect(after2.onHand).toBe(before2Row.onHand);
+
+    const [line1] = await ctx.db
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.id, item.id));
+    expect(line1.restockedQuantity).toBe(0);
+
+    expect(await ctx.db.select().from(inventoryAdjustments)).toHaveLength(0);
   });
 });
 ```
