@@ -36,6 +36,19 @@ vi.mock("@/lib/auth/session", () => ({
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
+// Wraps the real implementations by default, so every existing test still
+// talks to the actual functions. A test that needs the underlying call to
+// misbehave overrides one function for a single call with mockRejectedValueOnce
+// and lets the wrapper fall back to the real implementation afterwards.
+vi.mock("@/lib/orders/restock", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/orders/restock")>();
+  return {
+    ...actual,
+    restockRefundedOrder: vi.fn(actual.restockRefundedOrder),
+    writeOffOrderStock: vi.fn(actual.writeOffOrderStock),
+  };
+});
+
 const ADDRESS = {
   name: "Test Buyer",
   line1: "1 Powder Lane",
@@ -70,6 +83,7 @@ beforeEach(async () => {
 });
 
 const { restockAction, writeOffAction } = await import("./actions");
+const restockLib = await import("@/lib/orders/restock");
 
 async function refundedOrder(quantity: number) {
   const [order] = await ctx.db
@@ -146,6 +160,42 @@ describe("restockAction", () => {
 
     expect((await restockAction({ status: "idle" }, form)).status).toBe("error");
   });
+
+  it("refuses a blank quantity instead of treating it as zero", async () => {
+    const { order, item } = await refundedOrder(2);
+
+    const form = new FormData();
+    form.set("orderId", order.id);
+    form.set(`quantity:${item.id}`, "   ");
+
+    const state = await restockAction({ status: "idle" }, form);
+
+    expect(state).toEqual({
+      status: "error",
+      error: "Enter whole numbers of units.",
+    });
+    const [stock] = await ctx.db
+      .select()
+      .from(inventory)
+      .where(eq(inventory.productId, productId));
+    expect(stock.onHand).toBe(10);
+  });
+
+  it("rejects rather than reporting a friendly error when restock fails unexpectedly", async () => {
+    const { order, item } = await refundedOrder(1);
+
+    vi.mocked(restockLib.restockRefundedOrder).mockRejectedValueOnce(
+      new Error("connection reset"),
+    );
+
+    const form = new FormData();
+    form.set("orderId", order.id);
+    form.set(`quantity:${item.id}`, "1");
+
+    await expect(restockAction({ status: "idle" }, form)).rejects.toThrow(
+      "connection reset",
+    );
+  });
 });
 
 describe("writeOffAction", () => {
@@ -163,5 +213,28 @@ describe("writeOffAction", () => {
       .from(inventory)
       .where(eq(inventory.productId, productId));
     expect(stock.onHand).toBe(10);
+
+    // The status alone would also pass if the action did nothing at all --
+    // the observable effect is that the order is stamped decided.
+    const [updated] = await ctx.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, order.id));
+    expect(updated.stockDecisionAt).not.toBeNull();
+  });
+
+  it("rejects rather than reporting a friendly error when the write-off fails unexpectedly", async () => {
+    const { order } = await refundedOrder(1);
+
+    vi.mocked(restockLib.writeOffOrderStock).mockRejectedValueOnce(
+      new Error("connection reset"),
+    );
+
+    const form = new FormData();
+    form.set("orderId", order.id);
+
+    await expect(writeOffAction({ status: "idle" }, form)).rejects.toThrow(
+      "connection reset",
+    );
   });
 });
