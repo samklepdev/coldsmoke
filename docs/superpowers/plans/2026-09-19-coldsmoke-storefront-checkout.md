@@ -1800,14 +1800,22 @@ Create `src/lib/inventory/inventory.test.ts`:
 ```ts
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { testDb } from "@/test/db";
-import { products, inventory, orders, orderItems } from "@/lib/db/schema";
+import {
+  products,
+  inventory,
+  orders,
+  orderItems,
+  inventoryAdjustments,
+} from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import {
   reserveStock,
   commitStock,
   releaseStock,
   releaseExpiredReservations,
+  restockOrderItems,
   OutOfStockError,
+  RestockNotAllowedError,
 } from "./index";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
@@ -2101,6 +2109,228 @@ describe("releaseExpiredReservations", () => {
     expect(await stock()).toMatchObject({ onHand: 1, reserved: 0 });
   });
 });
+
+describe("restockOrderItems", () => {
+  /** A paid, committed, refunded order holding `quantity` units. */
+  async function refundedOrder(quantity: number) {
+    const [order] = await ctx.db
+      .insert(orders)
+      .values({
+        email: "buyer@example.com",
+        status: "refunded",
+        inventoryState: "committed",
+        refundedCents: 5100,
+        subtotalCents: 4500,
+        shippingCents: 600,
+        taxCents: 0,
+        discountCents: 0,
+        totalCents: 5100,
+        shippingAddress: ADDRESS,
+      })
+      .returning();
+
+    const [item] = await ctx.db
+      .insert(orderItems)
+      .values({
+        orderId: order.id,
+        productId,
+        name: "Test EDT",
+        unitPriceCents: 4500,
+        quantity,
+        totalCents: 4500 * quantity,
+      })
+      .returning();
+
+    return { order, item };
+  }
+
+  async function stock() {
+    const [row] = await ctx.db
+      .select()
+      .from(inventory)
+      .where(eq(inventory.productId, productId));
+    return row;
+  }
+
+  it("returns units to on_hand and records the movement", async () => {
+    const { order, item } = await refundedOrder(2);
+    const before = (await stock()).onHand;
+
+    await ctx.db.transaction(async (tx) => {
+      await restockOrderItems(
+        tx,
+        order.id,
+        [{ orderItemId: item.id, quantity: 2 }],
+        "admin_1",
+      );
+    });
+
+    expect((await stock()).onHand).toBe(before + 2);
+
+    const [line] = await ctx.db
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.id, item.id));
+    expect(line.restockedQuantity).toBe(2);
+
+    const ledger = await ctx.db
+      .select()
+      .from(inventoryAdjustments)
+      .where(eq(inventoryAdjustments.productId, productId));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].delta).toBe(2);
+    expect(ledger[0].reason).toBe("refund_restock");
+    expect(ledger[0].adminUserId).toBe("admin_1");
+  });
+
+  it("never returns more units than were ordered", async () => {
+    const { order, item } = await refundedOrder(2);
+    const before = (await stock()).onHand;
+
+    await expect(
+      ctx.db.transaction(async (tx) => {
+        await restockOrderItems(
+          tx,
+          order.id,
+          [{ orderItemId: item.id, quantity: 3 }],
+          "admin_1",
+        );
+      }),
+    ).rejects.toThrow(RestockNotAllowedError);
+
+    // The whole transaction rolled back: no stock, no ledger row.
+    expect((await stock()).onHand).toBe(before);
+    expect(
+      await ctx.db.select().from(inventoryAdjustments),
+    ).toHaveLength(0);
+  });
+
+  it("returns the units once when the same restock is submitted twice", async () => {
+    const { order, item } = await refundedOrder(2);
+    const before = (await stock()).onHand;
+
+    const restock = () =>
+      ctx.db.transaction(async (tx) => {
+        await restockOrderItems(
+          tx,
+          order.id,
+          [{ orderItemId: item.id, quantity: 2 }],
+          "admin_1",
+        );
+      });
+
+    await restock();
+    await expect(restock()).rejects.toThrow(RestockNotAllowedError);
+
+    expect((await stock()).onHand).toBe(before + 2);
+  });
+
+  it("allows a later return of the remaining unit", async () => {
+    const { order, item } = await refundedOrder(2);
+    const before = (await stock()).onHand;
+
+    for (const quantity of [1, 1]) {
+      await ctx.db.transaction(async (tx) => {
+        await restockOrderItems(
+          tx,
+          order.id,
+          [{ orderItemId: item.id, quantity }],
+          "admin_1",
+        );
+      });
+    }
+
+    expect((await stock()).onHand).toBe(before + 2);
+    expect(await ctx.db.select().from(inventoryAdjustments)).toHaveLength(2);
+  });
+
+  it("leaves reserved untouched", async () => {
+    const { order, item } = await refundedOrder(2);
+    const before = (await stock()).reserved;
+
+    await ctx.db.transaction(async (tx) => {
+      await restockOrderItems(
+        tx,
+        order.id,
+        [{ orderItemId: item.id, quantity: 1 }],
+        "admin_1",
+      );
+    });
+
+    // Restocking returns units to the available pool, not to a reservation --
+    // this order's reservation was consumed when its stock was committed.
+    expect((await stock()).reserved).toBe(before);
+  });
+
+  it("refuses an order whose stock was never committed", async () => {
+    const { order, item } = await refundedOrder(1);
+    await ctx.db
+      .update(orders)
+      .set({ inventoryState: "released" })
+      .where(eq(orders.id, order.id));
+
+    await expect(
+      ctx.db.transaction(async (tx) => {
+        await restockOrderItems(
+          tx,
+          order.id,
+          [{ orderItemId: item.id, quantity: 1 }],
+          "admin_1",
+        );
+      }),
+    ).rejects.toThrow(RestockNotAllowedError);
+  });
+
+  it("refuses an order with no refund recorded", async () => {
+    const { order, item } = await refundedOrder(1);
+    await ctx.db
+      .update(orders)
+      .set({ refundedCents: 0 })
+      .where(eq(orders.id, order.id));
+
+    await expect(
+      ctx.db.transaction(async (tx) => {
+        await restockOrderItems(
+          tx,
+          order.id,
+          [{ orderItemId: item.id, quantity: 1 }],
+          "admin_1",
+        );
+      }),
+    ).rejects.toThrow(RestockNotAllowedError);
+  });
+
+  it("refuses a submission of nothing", async () => {
+    const { order, item } = await refundedOrder(1);
+
+    await expect(
+      ctx.db.transaction(async (tx) => {
+        await restockOrderItems(
+          tx,
+          order.id,
+          [{ orderItemId: item.id, quantity: 0 }],
+          "admin_1",
+        );
+      }),
+    ).rejects.toThrow(RestockNotAllowedError);
+  });
+
+  it("refuses a line belonging to a different order", async () => {
+    const mine = await refundedOrder(1);
+    const theirs = await refundedOrder(1);
+
+    await expect(
+      ctx.db.transaction(async (tx) => {
+        await restockOrderItems(
+          tx,
+          mine.order.id,
+          [{ orderItemId: theirs.item.id, quantity: 1 }],
+          "admin_1",
+        );
+      }),
+    ).rejects.toThrow(RestockNotAllowedError);
+  });
+});
 ```
 
 - [ ] **Step 3: Start the test database and run the tests to verify they fail**
@@ -2119,7 +2349,12 @@ Create `src/lib/inventory/index.ts`:
 ```ts
 import { and, eq, lt, sql } from "drizzle-orm";
 import { db, type Db, type Tx } from "@/lib/db/client";
-import { inventory, orders, orderItems } from "@/lib/db/schema";
+import {
+  inventory,
+  inventoryAdjustments,
+  orders,
+  orderItems,
+} from "@/lib/db/schema";
 
 export const RESERVATION_WINDOW_MS = 15 * 60 * 1000;
 
@@ -2281,6 +2516,108 @@ export async function releaseExpiredReservations(database: Db = db): Promise<num
   }
 
   return cancelledCount;
+}
+
+export class RestockNotAllowedError extends Error {
+  constructor(reason: string) {
+    super(`Cannot restock this order: ${reason}`);
+    this.name = "RestockNotAllowedError";
+  }
+}
+
+/**
+ * Returns refunded units to the available pool.
+ *
+ * Refunding an order used to move money and nothing else, so every refund
+ * quietly destroyed stock on paper: `commitStock` had already decremented
+ * `on_hand`, and nothing ever added it back.
+ *
+ * The bound lives in the WHERE clause, like `reserveStock`'s. That single
+ * atomic statement is the whole idempotency story -- a double-submitted form
+ * or two admins clicking at once cannot inflate stock, and no lock is needed.
+ * Unlike a state-machine claim it still allows a LATER return of whatever is
+ * left, which is the second-bottle-comes-back-next-week case.
+ *
+ * `reserved` is deliberately untouched: this order's reservation was consumed
+ * when its stock was committed, and putting units back there would make them
+ * look spoken-for by an order that no longer exists.
+ *
+ * Must be called inside a transaction: a failure on any line must roll back
+ * the lines already restocked, or a partial failure leaves invented stock.
+ */
+export async function restockOrderItems(
+  tx: Tx,
+  orderId: string,
+  lines: { orderItemId: string; quantity: number }[],
+  adminUserId: string,
+): Promise<void> {
+  const requested = lines.filter((line) => line.quantity > 0);
+  if (requested.length === 0) {
+    throw new RestockNotAllowedError(
+      "no units were entered — write the order off instead if nothing came back",
+    );
+  }
+
+  const [order] = await tx
+    .select()
+    .from(orders)
+    .where(eq(orders.id, orderId))
+    .limit(1);
+
+  if (!order) {
+    throw new RestockNotAllowedError("no such order");
+  }
+
+  // Units that were never deducted cannot be returned; doing so would invent
+  // stock out of nothing.
+  if (order.inventoryState !== "committed") {
+    throw new RestockNotAllowedError(
+      `its stock was never committed (inventory state "${order.inventoryState}")`,
+    );
+  }
+
+  if (order.refundedCents <= 0) {
+    throw new RestockNotAllowedError("it has no refund recorded");
+  }
+
+  for (const line of requested) {
+    const claimed = await tx
+      .update(orderItems)
+      .set({
+        restockedQuantity: sql`${orderItems.restockedQuantity} + ${line.quantity}`,
+      })
+      .where(
+        and(
+          eq(orderItems.id, line.orderItemId),
+          // Scoping to the order stops a line from another order being
+          // restocked through this one.
+          eq(orderItems.orderId, orderId),
+          sql`${orderItems.restockedQuantity} + ${line.quantity} <= ${orderItems.quantity}`,
+        ),
+      )
+      .returning({ productId: orderItems.productId });
+
+    if (claimed.length === 0) {
+      throw new RestockNotAllowedError(
+        "that is more than was ordered, or the line is not on this order",
+      );
+    }
+
+    await tx
+      .update(inventory)
+      .set({
+        onHand: sql`${inventory.onHand} + ${line.quantity}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(inventory.productId, claimed[0].productId));
+
+    await tx.insert(inventoryAdjustments).values({
+      productId: claimed[0].productId,
+      delta: line.quantity,
+      reason: "refund_restock",
+      adminUserId,
+    });
+  }
 }
 ```
 
