@@ -24,14 +24,19 @@ vi.mock("@/lib/db/client", async () => {
   return { db: shared.db };
 });
 
+// A spy rather than a plain stub, so the gate itself can be asserted. Mocking
+// the module wholesale is what would make deleting requireAdminUser from
+// restockAction or writeOffAction invisible to the whole suite -- see "the
+// admin gate" below.
+const requireAdminUser = vi.fn(async () => ({
+  id: "admin1",
+  email: "admin@example.com",
+  name: "Admin",
+  role: "admin",
+  emailVerified: true,
+}));
 vi.mock("@/lib/auth/session", () => ({
-  requireAdminUser: async () => ({
-    id: "admin1",
-    email: "admin@example.com",
-    name: "Admin",
-    role: "admin",
-    emailVerified: true,
-  }),
+  requireAdminUser: () => requireAdminUser(),
 }));
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
@@ -68,6 +73,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.truncate();
+  requireAdminUser.mockClear();
   const [product] = await ctx.db
     .insert(products)
     .values({
@@ -181,6 +187,31 @@ describe("restockAction", () => {
     expect(stock.onHand).toBe(10);
   });
 
+  it("refuses a corrupted order-item id instead of letting Postgres reject it", async () => {
+    // quantity:<id> is parsed by slicing the field name -- a crafted or
+    // corrupted POST like quantity:abc=1 would otherwise reach
+    // eq(orderItems.id, "abc") on a uuid column and come back from Postgres
+    // as an unhandled 22P02, surfacing as an opaque 500 instead of the
+    // friendly refusal every other bad input on this form receives.
+    const { order } = await refundedOrder(2);
+
+    const form = new FormData();
+    form.set("orderId", order.id);
+    form.set("quantity:not-a-uuid", "1");
+
+    const state = await restockAction({ status: "idle" }, form);
+
+    expect(state).toEqual({
+      status: "error",
+      error: "Enter whole numbers of units.",
+    });
+    const [stock] = await ctx.db
+      .select()
+      .from(inventory)
+      .where(eq(inventory.productId, productId));
+    expect(stock.onHand).toBe(10);
+  });
+
   it("rejects rather than reporting a friendly error when restock fails unexpectedly", async () => {
     const { order, item } = await refundedOrder(1);
 
@@ -236,5 +267,29 @@ describe("writeOffAction", () => {
     await expect(writeOffAction({ status: "idle" }, form)).rejects.toThrow(
       "connection reset",
     );
+  });
+});
+
+describe("the admin gate", () => {
+  it("is called by restockAction and writeOffAction", async () => {
+    // These two actions mutate inventory, so an unenforced gate here is worse
+    // than on the read-mostly actions: mocking the session module wholesale
+    // means deleting requireAdminUser would leave every other test in this
+    // file green. Assert the call itself, matching the pattern in
+    // actions.test.ts's "the admin gate".
+    const { order, item } = await refundedOrder(2);
+
+    requireAdminUser.mockClear();
+    const restockForm = new FormData();
+    restockForm.set("orderId", order.id);
+    restockForm.set(`quantity:${item.id}`, "1");
+    await restockAction({ status: "idle" }, restockForm);
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
+
+    requireAdminUser.mockClear();
+    const writeOffForm = new FormData();
+    writeOffForm.set("orderId", order.id);
+    await writeOffAction({ status: "idle" }, writeOffForm);
+    expect(requireAdminUser).toHaveBeenCalledTimes(1);
   });
 });
