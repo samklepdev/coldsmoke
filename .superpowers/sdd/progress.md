@@ -1315,3 +1315,22 @@ Task 4: complete (commits bf8043e..4be229f, Approved after 1 fix pass)
   - LESSON WORTH CARRYING: my briefs keep specifying tests that assert a status
     or an absence rather than a distinguishing effect. Task 5 and 6 briefs
     should be read with that in mind.
+Task 5: complete (commits 937b2e7..23c3473, review Approved, 0 Critical/Important)
+  - StockPanel.tsx + detail page wiring + list marker. tsc/lint clean, 611/611.
+  - CONTROLLER DID THE BROWSER CHECK the implementer was told to skip (it
+    cannot establish an admin session). The Chrome extension timed out on
+    screenshots three times, so I switched to a THROWAWAY Playwright spec
+    following admin.spec.ts's pattern (sign up, force emailVerified + role
+    admin in the DB, sign in). Verified against a real refunded order: list
+    marker present, input defaults to full ordered quantity, Return to stock
+    moved on_hand by exactly 2 and set stock_decision_at, marker then gone.
+  - THAT CHECK CAUGHT A DEFECT NO CODE REVIEW WOULD HAVE: the panel worked but
+    rendered as an unstyled block with colliding columns, directly beneath a
+    properly formatted Items table. MY plan omitted the CSS classes. Fixed by
+    reusing detail.module.css (styles.table/right/subheading) rather than
+    inventing styles; reviewer independently confirmed the Items table above
+    already right-aligns numeric columns the same way.
+  - Cleanup after verification: throwaway spec deleted, check orders and
+    panel-check admin users removed, and on_hand corrected back to 33 -- the
+    two runs restocked orders whose stock was never actually deducted, so they
+    had invented 4 units.
