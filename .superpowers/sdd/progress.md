@@ -1124,3 +1124,42 @@ items_left 2, zero reconcile: ledger rows. Email on the order is gesg@emak.com
 -- not example.com, so the Resend 422 seen in the e2e will not recur for this
 one, but the domain looks throwaway and EMAIL_FROM is still Resend's shared
 test sender, so read what Resend returns rather than assuming delivery.
+
+# ============================================================
+# PLAN: Refund Restock (2026-09-27)
+# Plan: docs/superpowers/plans/2026-09-27-refund-restock.md
+# Spec: docs/superpowers/specs/2026-09-27-refund-restock-design.md
+# Branch: TBD (set at Task 1)
+# Base commit: recorded below
+# ============================================================
+
+## Pre-flight review (controller, before Task 1)
+Found and fixed THREE defects in my own plan before dispatching anything:
+1. StockPanel used `formAction={writeOffAction}` on a button inside the restock
+   form. useActionState actions take (prevState, formData), so React would have
+   passed FormData as prevState and nothing as formData -- it would have crashed
+   on the first write-off. Restructured into two forms, matching ResendPrompt in
+   FulfillForm.tsx.
+2. writeOffOrderStock took adminUserId and never used it. Nothing records who
+   decided (stock_decision_at stores only that a decision happened), so the
+   parameter went nowhere. Dropped it.
+3. The restock form's JSX indentation was stale after the fragment wrapper was
+   added. That block is a byte-for-byte `Create` block, so the formatter would
+   have rewritten it and failed the drift guard in Task 6.
+
+Earlier self-review (before commit) had already fixed: requireAdminUser called
+twice in restockAction; the restock.test.ts Create block missing the
+vi.mock("@/lib/db/client") that the plan's own prose requires (without it the
+suite writes to the DEV database); and an action-test fragment written with
+`Create `path`:` syntax, which the drift parser compares byte-for-byte against a
+whole file.
+
+## Spec amendment made during planning
+inventory_adjustments already exists, is migrated, and has ZERO writers, readers
+and rows. The spec originally rejected "a ledger table" as too much machinery --
+wrong, since one was already there. Restock now writes to it (delta,
+reason="refund_restock", admin_user_id). restocked_quantity remains the GUARD;
+the ledger is history and is never read to authorise a restock.
+
+## Progress
+(nothing executed yet)

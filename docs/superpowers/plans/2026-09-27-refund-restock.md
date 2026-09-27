@@ -691,7 +691,7 @@ describe("writeOffOrderStock", () => {
   it("records the decision and changes no stock", async () => {
     const { order } = await refundedOrder(2);
 
-    await writeOffOrderStock({ orderId: order.id, adminUserId: "admin_1" });
+    await writeOffOrderStock({ orderId: order.id });
 
     expect((await reload(order.id)).stockDecisionAt).not.toBeNull();
     const [stock] = await ctx.db
@@ -710,7 +710,7 @@ describe("awaitsStockDecision", () => {
 
   it("is false once a decision is recorded", async () => {
     const { order } = await refundedOrder(1);
-    await writeOffOrderStock({ orderId: order.id, adminUserId: "admin_1" });
+    await writeOffOrderStock({ orderId: order.id });
     expect(awaitsStockDecision(await reload(order.id))).toBe(false);
   });
 
@@ -781,10 +781,14 @@ export async function restockRefundedOrder(args: {
  *
  * Deliberately does not call restockOrderItems: there is nothing to restock,
  * and routing a zero through it would hit the "no units were entered" refusal.
+ *
+ * Takes no admin id because nothing here records one -- stock_decision_at
+ * stores that a decision happened, not who made it, and the ledger only gets
+ * rows for actual stock movements. Add attribution when there is a column to
+ * put it in, not a parameter that goes nowhere.
  */
 export async function writeOffOrderStock(args: {
   orderId: string;
-  adminUserId: string;
 }): Promise<void> {
   await db
     .update(orders)
@@ -982,14 +986,14 @@ export async function writeOffAction(
   _prev: StockState,
   formData: FormData,
 ): Promise<StockState> {
-  const admin = await requireAdminUser();
+  await requireAdminUser();
 
   const orderId = z.uuid().safeParse(formData.get("orderId"));
   if (!orderId.success) {
     return { status: "error", error: "Unknown order." };
   }
 
-  await writeOffOrderStock({ orderId: orderId.data, adminUserId: admin.id });
+  await writeOffOrderStock({ orderId: orderId.data });
 
   revalidatePath(`/admin/orders/${orderId.data}`);
   revalidatePath("/admin/orders");
@@ -1080,10 +1084,6 @@ export function StockPanel({
     return <p role="status">{state.units} returned to stock.</p>;
   }
 
-  if (state.status === "written-off") {
-    return <p role="status">Written off. Stock unchanged.</p>;
-  }
-
   if (decided && !reopened) {
     const restocked = lines.reduce(
       (total, line) => total + line.restockedQuantity,
@@ -1111,46 +1111,76 @@ export function StockPanel({
   }
 
   return (
+    <>
+      <form action={action}>
+        <input type="hidden" name="orderId" value={orderId} />
+
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Ordered</th>
+              <th>Already restocked</th>
+              <th>Return to stock</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((line) => (
+              <tr key={line.id}>
+                <td>{line.name}</td>
+                <td>{line.quantity}</td>
+                <td>{line.restockedQuantity}</td>
+                <td>
+                  <input
+                    type="number"
+                    name={`quantity:${line.id}`}
+                    min={0}
+                    max={line.quantity - line.restockedQuantity}
+                    defaultValue={line.quantity - line.restockedQuantity}
+                    aria-label={`Units of ${line.name} to return to stock`}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        {state.status === "error" && <p role="alert">{state.error}</p>}
+
+        <Button type="submit" variant="primary" disabled={pending}>
+          {pending ? "Returning" : "Return to stock"}
+        </Button>
+      </form>
+
+      <WriteOffForm orderId={orderId} />
+    </>
+  );
+}
+
+/**
+ * Its own form and its own action state.
+ *
+ * `formAction={writeOffAction}` on a button inside the restock form does NOT
+ * work: useActionState actions take (prevState, formData), so React would pass
+ * FormData as prevState and nothing as formData. Two forms is the shape the
+ * rest of this directory already uses -- see ResendPrompt in FulfillForm.tsx.
+ */
+function WriteOffForm({ orderId }: { orderId: string }) {
+  const [state, action, pending] = useActionState<StockState, FormData>(
+    writeOffAction,
+    { status: "idle" },
+  );
+
+  if (state.status === "written-off") {
+    return <p role="status">Written off. Stock unchanged.</p>;
+  }
+
+  return (
     <form action={action}>
       <input type="hidden" name="orderId" value={orderId} />
-
-      <table>
-        <thead>
-          <tr>
-            <th>Item</th>
-            <th>Ordered</th>
-            <th>Already restocked</th>
-            <th>Return to stock</th>
-          </tr>
-        </thead>
-        <tbody>
-          {lines.map((line) => (
-            <tr key={line.id}>
-              <td>{line.name}</td>
-              <td>{line.quantity}</td>
-              <td>{line.restockedQuantity}</td>
-              <td>
-                <input
-                  type="number"
-                  name={`quantity:${line.id}`}
-                  min={0}
-                  max={line.quantity - line.restockedQuantity}
-                  defaultValue={line.quantity - line.restockedQuantity}
-                  aria-label={`Units of ${line.name} to return to stock`}
-                />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
       {state.status === "error" && <p role="alert">{state.error}</p>}
-
-      <Button type="submit" variant="primary" disabled={pending}>
-        {pending ? "Returning" : "Return to stock"}
-      </Button>
-      <Button type="submit" variant="outline" formAction={writeOffAction}>
-        Write off
+      <Button type="submit" variant="outline" disabled={pending}>
+        {pending ? "Saving" : "Write off"}
       </Button>
     </form>
   );
