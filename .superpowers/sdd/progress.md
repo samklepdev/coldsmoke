@@ -1275,3 +1275,19 @@ Task 3: complete (commits dfbbf2b..d68016a + guard fix, review Approved)
     plus a test, and mutation-verified: removing the guard fails that test.
   - This plan's restock.ts and restock.test.ts Create blocks re-synced after
     the fix, so Task 6's registration will not immediately fail on them.
+Task 4: committed 3d2b146 + 2a6fa7a (review in flight at time of writing)
+  - restockAction + writeOffAction + parseLines + StockState appended to
+    src/app/(admin)/admin/orders/[id]/actions.ts. 4/4 focused, 608/608 full
+    suite, tsc + lint clean.
+  - Controller verified by HASHING each pre-existing action before and after:
+    fulfillAction, resendShippingAction and refundAction are byte-identical.
+    That is the real risk of an append, and it is checked rather than assumed.
+  - Controller-ordered deviation from the brief, and it was necessary:
+    writeOffAction needed a try/catch because Task 3's guard fix made
+    writeOffOrderStock throw. The brief predates that fix, so following it
+    verbatim would have let a refusal escape as an unhandled Server Action
+    rejection. Verified present in the shipped code.
+  - THIRD drift-sync commit of the run (2026-09-20-admin-orders.md this time).
+    Every task so far has touched a file that an older plan describes with a
+    byte-for-byte Create block. This is expected and correct; the alternative
+    is plans that lie about the shipped code.
