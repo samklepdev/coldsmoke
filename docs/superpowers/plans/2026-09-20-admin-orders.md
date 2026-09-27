@@ -2201,12 +2201,22 @@ function parseLines(formData: FormData) {
   for (const [key, value] of formData.entries()) {
     if (!key.startsWith("quantity:")) continue;
 
-    const quantity = Number(value);
-    // A non-numeric or negative entry is a broken form, not a request to
-    // remove stock -- refuse rather than quietly coercing it to zero.
+    // No id after the colon can never match a real order item -- refuse it
+    // here rather than let it travel further and surface as a caught
+    // refusal downstream.
+    const orderItemId = key.slice("quantity:".length);
+    if (!orderItemId) return null;
+
+    const raw = typeof value === "string" ? value.trim() : "";
+    // Blank, non-numeric, or negative is a broken form, not a request to
+    // remove stock -- refuse rather than quietly coercing it to zero. (An
+    // empty string is falsy but Number("") is 0, which Number.isInteger
+    // accepts, so blank has to be caught before the numeric check runs.)
+    if (raw === "") return null;
+    const quantity = Number(raw);
     if (!Number.isInteger(quantity) || quantity < 0) return null;
 
-    lines.push({ orderItemId: key.slice("quantity:".length), quantity });
+    lines.push({ orderItemId, quantity });
   }
 
   return lines;
