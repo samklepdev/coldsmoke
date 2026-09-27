@@ -4,6 +4,7 @@ import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
 import { FulfillForm } from "./FulfillForm";
 import { RefundButton } from "./RefundButton";
+import { StockPanel } from "./StockPanel";
 import styles from "./detail.module.css";
 
 // Matches the list page's `.toISOString().slice(0, 10)` date — a plain date
@@ -144,6 +145,22 @@ export default async function AdminOrderDetailPage({
           />
         </>
       ) : null}
+
+      {order.refundedCents > 0 && (
+        <section>
+          <h2>Stock</h2>
+          <StockPanel
+            orderId={order.id}
+            decided={order.stockDecisionAt !== null}
+            lines={order.items.map((item) => ({
+              id: item.id,
+              name: item.name,
+              quantity: item.quantity,
+              restockedQuantity: item.restockedQuantity,
+            }))}
+          />
+        </section>
+      )}
     </section>
   );
 }

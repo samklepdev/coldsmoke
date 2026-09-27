@@ -3,6 +3,7 @@ import { listOrdersForAdmin, ADMIN_PAGE_SIZE } from "@/lib/orders/adminList";
 import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
 import { orderStatus } from "@/lib/db/schema";
+import { awaitsStockDecision } from "@/lib/orders/restock";
 import styles from "./orders.module.css";
 
 /**
@@ -69,6 +70,9 @@ export default async function AdminOrdersPage({
                   <Link href={`/admin/orders/${order.id}`}>
                     {formatOrderNumber(order.orderNumber)}
                   </Link>
+                  {awaitsStockDecision(order) && (
+                    <span title="Refunded — awaiting a stock decision"> ⏳</span>
+                  )}
                 </td>
                 <td>{order.createdAt.toISOString().slice(0, 10)}</td>
                 <td>{order.email}</td>
