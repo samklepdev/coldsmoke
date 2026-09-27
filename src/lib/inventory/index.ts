@@ -1,6 +1,11 @@
 import { and, eq, lt, sql } from "drizzle-orm";
 import { db, type Db, type Tx } from "@/lib/db/client";
-import { inventory, orders, orderItems } from "@/lib/db/schema";
+import {
+  inventory,
+  inventoryAdjustments,
+  orders,
+  orderItems,
+} from "@/lib/db/schema";
 
 export const RESERVATION_WINDOW_MS = 15 * 60 * 1000;
 
@@ -162,4 +167,106 @@ export async function releaseExpiredReservations(database: Db = db): Promise<num
   }
 
   return cancelledCount;
+}
+
+export class RestockNotAllowedError extends Error {
+  constructor(reason: string) {
+    super(`Cannot restock this order: ${reason}`);
+    this.name = "RestockNotAllowedError";
+  }
+}
+
+/**
+ * Returns refunded units to the available pool.
+ *
+ * Refunding an order used to move money and nothing else, so every refund
+ * quietly destroyed stock on paper: `commitStock` had already decremented
+ * `on_hand`, and nothing ever added it back.
+ *
+ * The bound lives in the WHERE clause, like `reserveStock`'s. That single
+ * atomic statement is the whole idempotency story -- a double-submitted form
+ * or two admins clicking at once cannot inflate stock, and no lock is needed.
+ * Unlike a state-machine claim it still allows a LATER return of whatever is
+ * left, which is the second-bottle-comes-back-next-week case.
+ *
+ * `reserved` is deliberately untouched: this order's reservation was consumed
+ * when its stock was committed, and putting units back there would make them
+ * look spoken-for by an order that no longer exists.
+ *
+ * Must be called inside a transaction: a failure on any line must roll back
+ * the lines already restocked, or a partial failure leaves invented stock.
+ */
+export async function restockOrderItems(
+  tx: Tx,
+  orderId: string,
+  lines: { orderItemId: string; quantity: number }[],
+  adminUserId: string,
+): Promise<void> {
+  const requested = lines.filter((line) => line.quantity > 0);
+  if (requested.length === 0) {
+    throw new RestockNotAllowedError(
+      "no units were entered — write the order off instead if nothing came back",
+    );
+  }
+
+  const [order] = await tx
+    .select()
+    .from(orders)
+    .where(eq(orders.id, orderId))
+    .limit(1);
+
+  if (!order) {
+    throw new RestockNotAllowedError("no such order");
+  }
+
+  // Units that were never deducted cannot be returned; doing so would invent
+  // stock out of nothing.
+  if (order.inventoryState !== "committed") {
+    throw new RestockNotAllowedError(
+      `its stock was never committed (inventory state "${order.inventoryState}")`,
+    );
+  }
+
+  if (order.refundedCents <= 0) {
+    throw new RestockNotAllowedError("it has no refund recorded");
+  }
+
+  for (const line of requested) {
+    const claimed = await tx
+      .update(orderItems)
+      .set({
+        restockedQuantity: sql`${orderItems.restockedQuantity} + ${line.quantity}`,
+      })
+      .where(
+        and(
+          eq(orderItems.id, line.orderItemId),
+          // Scoping to the order stops a line from another order being
+          // restocked through this one.
+          eq(orderItems.orderId, orderId),
+          sql`${orderItems.restockedQuantity} + ${line.quantity} <= ${orderItems.quantity}`,
+        ),
+      )
+      .returning({ productId: orderItems.productId });
+
+    if (claimed.length === 0) {
+      throw new RestockNotAllowedError(
+        "that is more than was ordered, or the line is not on this order",
+      );
+    }
+
+    await tx
+      .update(inventory)
+      .set({
+        onHand: sql`${inventory.onHand} + ${line.quantity}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(inventory.productId, claimed[0].productId));
+
+    await tx.insert(inventoryAdjustments).values({
+      productId: claimed[0].productId,
+      delta: line.quantity,
+      reason: "refund_restock",
+      adminUserId,
+    });
+  }
 }
