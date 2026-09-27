@@ -1244,3 +1244,16 @@ Task 2: complete (commits 5c21f4d..c421095, review Approved, 0 Critical/Importan
     two-bottle order unlocks restocking BOTH bottles. Mitigated by the admin
     choosing the quantities, and it is what the plan's global constraint
     specifies -- but it is a policy choice the human may want to revisit.
+Task 3: committed d68016a (review in flight at time of writing)
+  - restockRefundedOrder + writeOffOrderStock + awaitsStockDecision in
+    src/lib/orders/restock.ts. 6/6 tests, full suite 603/603, tsc + lint clean.
+  - No drift-sync commit needed this time: both files are Create blocks in
+    THIS plan, which Task 6 registers with the guard.
+  - PLAN BUG FOUND BY THE IMPLEMENTER (good catch): the Interfaces summary line
+    still advertised writeOffOrderStock(args: { orderId, adminUserId }) after
+    my pre-flight fix removed that parameter from the code block. The
+    implementer followed the verbatim code and the explicit "do not add a
+    parameter that goes nowhere" instruction, then flagged the contradiction
+    instead of silently picking one. Plan line corrected by the controller.
+    Root cause was mine: I edited the code block during pre-flight and did not
+    re-read the Interfaces block above it.

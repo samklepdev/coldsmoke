@@ -535,7 +535,7 @@ the over-restock and double-submit tests."
 - Consumes: `restockOrderItems`, `RestockNotAllowedError` from Task 2.
 - Produces:
   - `restockRefundedOrder(args: { orderId: string; lines: { orderItemId: string; quantity: number }[]; adminUserId: string }): Promise<void>`
-  - `writeOffOrderStock(args: { orderId: string; adminUserId: string }): Promise<void>`
+  - `writeOffOrderStock(args: { orderId: string }): Promise<void>` — no admin id, because nothing here records one
   - `awaitsStockDecision(order: Order): boolean`
 
 Note the import path for `completePaidOrder`-style siblings: this module imports `db` from `@/lib/db/client` directly, not through `@/lib/orders`.
