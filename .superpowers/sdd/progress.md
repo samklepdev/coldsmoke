@@ -1355,3 +1355,37 @@ Task 6: complete (controller-run, commit below)
   Send it once the PR is open, or immediately if the run ends stuck instead.
 - Base for the final review: e11b037. Branch has 24 commits, tree clean, all
   four verification commands green.
+
+## Final whole-branch review (opus): READY TO MERGE WITH FIXES, 0 Critical
+Both blocking findings were in TESTS, not behaviour -- places a real regression
+would have shipped green:
+  1. The repo's admin-gate test exists precisely because the session module is
+     mocked wholesale, and it had never been extended to restockAction /
+     writeOffAction. Deleting requireAdminUser() from either would have left the
+     whole suite passing. Fixed; load-bearing proven (deleting the call fails
+     only the new assertion).
+  2. NO MULTI-LINE TEST existed, and multi-line is the ORDINARY path -- the
+     panel emits one input per order line. Added both-succeed (two products, no
+     cross-crediting) and partial-rollback. Load-bearing proven: splitting the
+     writes into two transactions leaks on_hand 2 -> 4 and fails the test.
+  Also folded in: the reserved:0 decoy fixture, the duplicated stock() helper,
+  and UUID validation of orderItemId (a crafted POST previously produced a
+  Postgres 22P02 escaping as an opaque 500 instead of a friendly refusal).
+Third Important was a SPEC defect, fixed by the controller in c21d12f: a second
+refund after a decision never reopens the question, because stock_decision_at is
+already stamped. Documented in spec 7b; closing it needs a refunded_at column.
+Reviewer argued AGAINST tightening the refunded_cents > 0 proportionality, and
+I agree: mapping cents to units is unsound with shipping/tax/discounts, and a
+wrong derived count corrupts stock silently -- worse than an admin over-offering
+on a form the per-line bound and a human both still gate.
+Accepted with follow-ups (not blocking): unchecked row count on the inventory
+UPDATE (shared with commitStock/releaseStock); the quantity > 0 filter dropping
+non-integers at the primitive (note: Postgres ROUNDS on assignment to integer,
+so 1.5 would add 2); free-text "refund_restock" reason; write-off's read-then-
+write shape overwriting an earlier stock_decision_at; emoji-only pending marker
+needing an aria-label; no ORDER BY on order items; no way to LIST orders
+awaiting a decision (a partial refund leaves status paid/fulfilled, so the
+status filter cannot find them).
+FINAL VERIFICATION (controller-run): 624 tests / 50 files; tsc clean; lint
+clean; e2e 19 passed with the payment test genuinely RUN (1 real
+payment_intent.succeeded forwarded).
