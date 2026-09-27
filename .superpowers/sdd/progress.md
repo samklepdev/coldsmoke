@@ -1344,3 +1344,14 @@ Task 6: complete (controller-run, commit below)
     620 tests / 50 files pass; tsc clean; lint clean; e2e 19 passed.
     The payment e2e RAN (4.4s) with a live forwarder delivering 1 real
     payment_intent.succeeded -- not a skip.
+
+## Standing instruction added 2026-09-27
+- "open a PR when the review comes back" -- PR AUTHORISED for
+  feat/refund-restock, but only AFTER the final whole-branch review returns and
+  its Critical/Important findings are resolved. Dispatch ONE fix subagent with
+  the complete findings list if there are any; do not open one fixer per
+  finding.
+- Still owed: the end-of-run PUSH NOTIFICATION ("ping me when it's all done").
+  Send it once the PR is open, or immediately if the run ends stuck instead.
+- Base for the final review: e11b037. Branch has 24 commits, tree clean, all
+  four verification commands green.
