@@ -1198,3 +1198,19 @@ Task 1: complete (commits 290068a..27bb9c6, review Approved, zero findings)
 - Do NOT dispatch implementers in parallel; they collide in the same files.
 - Verify each task by its ARTIFACTS (commit + report file), not by trusting a
   completion notification -- two agents died silently earlier today.
+Task 2: committed 97185b9 + c421095 (review in flight at time of writing)
+  - restockOrderItems + RestockNotAllowedError in src/lib/inventory/index.ts.
+    inventory.test.ts 12 -> 21 tests. Full suite 597/597, tsc + lint clean.
+  - MUTATION RE-RUN BY THE CONTROLLER, not just reported: deleting the
+    `restocked_quantity + n <= quantity` line from the WHERE clause fails
+    exactly "never returns more units than were ordered" and "returns the
+    units once when the same restock is submitted twice" (2 failed / 19
+    passed). index.ts restored, git diff empty. The bound is demonstrably
+    load-bearing rather than decorative.
+  - Controller also diffed pre/post test NAMES: zero pre-existing tests lost,
+    which is the failure mode the brief warned about for an append.
+  - Second commit is another older-plan drift sync (index.ts and
+    inventory.test.ts are byte-for-byte Create blocks in
+    2026-09-19-coldsmoke-storefront-checkout.md). Same pattern as Task 1.
+    This keeps happening because this feature touches files described by an
+    older plan; it is expected work, not the implementer freelancing.
