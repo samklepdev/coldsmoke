@@ -1696,7 +1696,7 @@ export default async function AdminOrderDetailPage({
 
       {order.refundedCents > 0 && (
         <section>
-          <h2>Stock</h2>
+          <h2 className={styles.subheading}>Stock</h2>
           <StockPanel
             orderId={order.id}
             decided={order.stockDecisionAt !== null}

@@ -1081,6 +1081,9 @@ Create `src/app/(admin)/admin/orders/[id]/StockPanel.tsx`:
 import { useActionState, useState } from "react";
 import { restockAction, writeOffAction, type StockState } from "./actions";
 import { Button } from "@/components/ui/Button";
+// Same stylesheet the order detail page uses, so this table lines up with the
+// Items table above it instead of rendering as an unstyled block.
+import styles from "./detail.module.css";
 
 type Line = {
   id: string;
@@ -1152,22 +1155,22 @@ export function StockPanel({
       <form action={action}>
         <input type="hidden" name="orderId" value={orderId} />
 
-        <table>
+        <table className={styles.table}>
           <thead>
             <tr>
               <th>Item</th>
-              <th>Ordered</th>
-              <th>Already restocked</th>
-              <th>Return to stock</th>
+              <th className={styles.right}>Ordered</th>
+              <th className={styles.right}>Already restocked</th>
+              <th className={styles.right}>Return to stock</th>
             </tr>
           </thead>
           <tbody>
             {lines.map((line) => (
               <tr key={line.id}>
                 <td>{line.name}</td>
-                <td>{line.quantity}</td>
-                <td>{line.restockedQuantity}</td>
-                <td>
+                <td className={styles.right}>{line.quantity}</td>
+                <td className={styles.right}>{line.restockedQuantity}</td>
+                <td className={styles.right}>
                   <input
                     type="number"
                     name={`quantity:${line.id}`}
