@@ -1124,3 +1124,268 @@ items_left 2, zero reconcile: ledger rows. Email on the order is gesg@emak.com
 -- not example.com, so the Resend 422 seen in the e2e will not recur for this
 one, but the domain looks throwaway and EMAIL_FROM is still Resend's shared
 test sender, so read what Resend returns rather than assuming delivery.
+
+# ============================================================
+# PLAN: Refund Restock (2026-09-27)
+# Plan: docs/superpowers/plans/2026-09-27-refund-restock.md
+# Spec: docs/superpowers/specs/2026-09-27-refund-restock-design.md
+# Branch: TBD (set at Task 1)
+# Base commit: recorded below
+# ============================================================
+
+## Pre-flight review (controller, before Task 1)
+Found and fixed THREE defects in my own plan before dispatching anything:
+1. StockPanel used `formAction={writeOffAction}` on a button inside the restock
+   form. useActionState actions take (prevState, formData), so React would have
+   passed FormData as prevState and nothing as formData -- it would have crashed
+   on the first write-off. Restructured into two forms, matching ResendPrompt in
+   FulfillForm.tsx.
+2. writeOffOrderStock took adminUserId and never used it. Nothing records who
+   decided (stock_decision_at stores only that a decision happened), so the
+   parameter went nowhere. Dropped it.
+3. The restock form's JSX indentation was stale after the fragment wrapper was
+   added. That block is a byte-for-byte `Create` block, so the formatter would
+   have rewritten it and failed the drift guard in Task 6.
+
+Earlier self-review (before commit) had already fixed: requireAdminUser called
+twice in restockAction; the restock.test.ts Create block missing the
+vi.mock("@/lib/db/client") that the plan's own prose requires (without it the
+suite writes to the DEV database); and an action-test fragment written with
+`Create `path`:` syntax, which the drift parser compares byte-for-byte against a
+whole file.
+
+## Spec amendment made during planning
+inventory_adjustments already exists, is migrated, and has ZERO writers, readers
+and rows. The spec originally rejected "a ledger table" as too much machinery --
+wrong, since one was already there. Restock now writes to it (delta,
+reason="refund_restock", admin_user_id). restocked_quantity remains the GUARD;
+the ledger is history and is never read to authorise a restock.
+
+## Progress
+Task 1: complete (commits 290068a..27bb9c6, review Approved, zero findings)
+  - Two columns added: order_items.restocked_quantity (int, not null,
+    default 0) and orders.stock_decision_at (timestamptz, nullable). Both
+    verified present in the dev DB by the controller, not just claimed.
+  - Implementer read the generated migration before applying it, as the brief's
+    gate required, and reports exactly two ADD COLUMN statements.
+  - SECOND COMMIT WAS NOT IN THE TASK'S FILE LIST, and is correct: schema.ts is
+    a registered byte-for-byte Create block in
+    2026-09-19-coldsmoke-storefront-checkout.md, so adding columns turned the
+    suite red until that block was re-synced. +13 lines, that plan file only.
+    Controller verified the stat before accepting. This is the same drift-sync
+    work Task 6 does for this plan -- it just arrived early because schema.ts
+    belongs to an OLDER plan.
+  - 588/588 tests, 48 files. Reviewer's one WARNING was that it could not see
+    test output from the diff; CONTROLLER RESOLVED IT by re-running the suite
+    directly: 588/588, 48 files. The only stderr line is a pre-existing vitest
+    config-loader notice, not from this change.
+  - Reviewer independently verified the drift sync was byte-faithful by
+    comparing hunk-for-hunk against the schema.ts hunk (both +9 and +4, same
+    indentation and context) and confirmed no unrelated prose moved. Also
+    confirmed via 0008_snapshot.json that no extra index or check constraint
+    was smuggled in -- the restocked_quantity <= quantity bound is correctly
+    still absent, since it belongs in Task 2's UPDATE, not in the schema.
+
+## Standing instructions from the user (2026-09-27)
+- "keep going through the rest of the tasks" -- run Tasks 1-6 continuously, no
+  check-ins between tasks. Only stop for a BLOCKED status that cannot be
+  resolved, or a finding that contradicts the plan (that is the human's call).
+- "ping me when it's all done" -- send a PUSH NOTIFICATION at the END of the
+  whole run, not per task. Send it whether the run ends green or stuck: if
+  something blocks partway, they still want to know at that moment rather than
+  discovering silence later.
+- Branch feat/refund-restock, base e11b037. All six briefs pre-generated.
+- Do NOT dispatch implementers in parallel; they collide in the same files.
+- Verify each task by its ARTIFACTS (commit + report file), not by trusting a
+  completion notification -- two agents died silently earlier today.
+Task 2: complete (commits 5c21f4d..c421095, review Approved, 0 Critical/Important)
+  - restockOrderItems + RestockNotAllowedError in src/lib/inventory/index.ts.
+    inventory.test.ts 12 -> 21 tests. Full suite 597/597, tsc + lint clean.
+  - MUTATION RE-RUN BY THE CONTROLLER, not just reported: deleting the
+    `restocked_quantity + n <= quantity` line from the WHERE clause fails
+    exactly "never returns more units than were ordered" and "returns the
+    units once when the same restock is submitted twice" (2 failed / 19
+    passed). index.ts restored, git diff empty. The bound is demonstrably
+    load-bearing rather than decorative.
+  - Controller also diffed pre/post test NAMES: zero pre-existing tests lost,
+    which is the failure mode the brief warned about for an append.
+  - Second commit is another older-plan drift sync (index.ts and
+    inventory.test.ts are byte-for-byte Create blocks in
+    2026-09-19-coldsmoke-storefront-checkout.md). Same pattern as Task 1.
+    This keeps happening because this feature touches files described by an
+    older plan; it is expected work, not the implementer freelancing.
+  - Reviewer verified things worth keeping: the tx contract is TYPE-enforced
+    (Tx resolves to PgTransaction which has rollback(): never, Db does not, so
+    restockOrderItems(db, ...) will not compile) -- a caller cannot silently
+    get partial restocks. Duplicate orderItemIds in one call accumulate
+    CORRECTLY, because the second UPDATE sees the first's uncommitted
+    increment; same per-statement re-evaluation that makes double-submit safe.
+    Refusal-ordering staleness is not exploitable: inventoryState `committed`
+    is terminal, and refundedCents is monotonic (written only via Math.max).
+  - MINORS DEFERRED TO THE FINAL WHOLE-BRANCH REVIEW:
+    1. index.ts:258-263 -- the inventory UPDATE does not check rows touched,
+       unlike the claim above it. Unreachable today (reviewer traced FK and
+       reserveStock paths), and commitStock/releaseStock share the gap, so it
+       is pre-existing pattern rather than regression.
+    2. index.ts:205 -- filter(quantity > 0) silently DROPS negative and
+       non-integer quantities instead of refusing them. Task 4's parseLines
+       rejects them, so this is defence-in-depth on an exported primitive.
+    3. inventory.test.ts:447-462 -- "leaves reserved untouched" cannot tell
+       "untouched" from "clamped to zero": the fixture starts at reserved 0.
+       Seeding a non-zero reserved would make it discriminate.
+    4. NO MULTI-LINE TEST anywhere, so the partial-rollback promise in the doc
+       comment (line 1 restocked, line 2 refused -> both roll back) is never
+       actually executed. Brief-prescribed gap, not implementer error.
+    5. Duplicated stock() helper shadowing the module-level one.
+    6. "refund_restock" is a free-text reason with no shared constant; a later
+       admin-adjustment feature could spell a sibling inconsistently.
+  - POLICY NOTE FOR THE USER (plan-mandated, not a bug): the gate is
+    refundedCents > 0 with no proportionality, so a $1 partial refund on a
+    two-bottle order unlocks restocking BOTH bottles. Mitigated by the admin
+    choosing the quantities, and it is what the plan's global constraint
+    specifies -- but it is a policy choice the human may want to revisit.
+Task 3: committed d68016a (review in flight at time of writing)
+  - restockRefundedOrder + writeOffOrderStock + awaitsStockDecision in
+    src/lib/orders/restock.ts. 6/6 tests, full suite 603/603, tsc + lint clean.
+  - No drift-sync commit needed this time: both files are Create blocks in
+    THIS plan, which Task 6 registers with the guard.
+  - PLAN BUG FOUND BY THE IMPLEMENTER (good catch): the Interfaces summary line
+    still advertised writeOffOrderStock(args: { orderId, adminUserId }) after
+    my pre-flight fix removed that parameter from the code block. The
+    implementer followed the verbatim code and the explicit "do not add a
+    parameter that goes nowhere" instruction, then flagged the contradiction
+    instead of silently picking one. Plan line corrected by the controller.
+    Root cause was mine: I edited the code block during pre-flight and did not
+    re-read the Interfaces block above it.
+Task 3: complete (commits dfbbf2b..d68016a + guard fix, review Approved)
+  - Reviewer verified atomicity against REAL Postgres semantics rather than
+    assuming: client.ts:11-13 documents using postgres-js over the Neon HTTP
+    driver precisely because inventory needs real multi-statement transactions,
+    so db.transaction's rollback-on-throw is genuine BEGIN/ROLLBACK. That is
+    what makes "records no decision when the restock is rejected" a real test.
+  - Reviewer confirmed the db-client mock applies (vi.mock + dynamic import,
+    no static import leak). Worth noting because the failure mode is invisible:
+    tests would still PASS while writing to the DEV database.
+  - CONTROLLER RESOLVED THE REVIEW'S ONE WARNING, and it was a real hole:
+    writeOffOrderStock had no guard, so an out-of-band caller could stamp
+    stockDecisionAt on an order that was never refunded. Harmless today
+    (awaitsStockDecision is already false for it), but poisonous later --
+    refund that order afterwards and it would NEVER appear as awaiting a
+    decision. Added refusals for "no such order" and "no refund recorded",
+    plus a test, and mutation-verified: removing the guard fails that test.
+  - This plan's restock.ts and restock.test.ts Create blocks re-synced after
+    the fix, so Task 6's registration will not immediately fail on them.
+Task 4: complete (commits bf8043e..4be229f, Approved after 1 fix pass)
+  - restockAction + writeOffAction + parseLines + StockState appended to
+    src/app/(admin)/admin/orders/[id]/actions.ts. 4/4 focused, 608/608 full
+    suite, tsc + lint clean.
+  - Controller verified by HASHING each pre-existing action before and after:
+    fulfillAction, resendShippingAction and refundAction are byte-identical.
+    That is the real risk of an append, and it is checked rather than assumed.
+  - Controller-ordered deviation from the brief, and it was necessary:
+    writeOffAction needed a try/catch because Task 3's guard fix made
+    writeOffOrderStock throw. The brief predates that fix, so following it
+    verbatim would have let a refusal escape as an unhandled Server Action
+    rejection. Verified present in the shipped code.
+  - THIRD drift-sync commit of the run (2026-09-20-admin-orders.md this time).
+    Every task so far has touched a file that an older plan describes with a
+    byte-for-byte Create block. This is expected and correct; the alternative
+    is plans that lie about the shipped code.
+  - FIRST "Needs fixes" of the run, and it was earned. Three Importants:
+    1. parseLines accepted a BLANK field as a valid zero. Number("") is 0 and
+       Number.isInteger(0) is true, so malformed input passed as a legitimate
+       zero-unit line -- while the comment beside it claimed it refused exactly
+       that. Fixed by trimming and returning null before Number() is reached.
+       Reviewer confirmed no legitimate input changed meaning: Number() already
+       ignored surrounding whitespace, so " 2" parsed to 2 before and still does.
+    2 & 3 WERE MY DEFECTS, not the implementer's -- both test bodies came
+       verbatim from my brief:
+       * No test would have failed if the deliberate
+         `instanceof RestockNotAllowedError` discrimination were replaced with a
+         blanket catch-all. That rethrow exists so a genuine bug surfaces rather
+         than being flattened into a friendly message an admin reads as normal.
+       * The write-off test asserted only that onHand stayed 10 -- equally true
+         if the action did nothing at all. Same vacuous-test class as the
+         no-double-email test earlier today, and from the same cause: asserting
+         the absence of a change without asserting the change that SHOULD occur.
+    Both fixes were demonstrated load-bearing, not asserted: catch-all
+    replacement failed the new rethrow tests (5/7), no-op stub failed the
+    strengthened write-off test (6/7), restores gave 7/7.
+  - Tests 4 -> 7. fulfillAction/refundAction still hash-identical after the fix.
+  - LESSON WORTH CARRYING: my briefs keep specifying tests that assert a status
+    or an absence rather than a distinguishing effect. Task 5 and 6 briefs
+    should be read with that in mind.
+Task 5: complete (commits 937b2e7..23c3473, review Approved, 0 Critical/Important)
+  - StockPanel.tsx + detail page wiring + list marker. tsc/lint clean, 611/611.
+  - CONTROLLER DID THE BROWSER CHECK the implementer was told to skip (it
+    cannot establish an admin session). The Chrome extension timed out on
+    screenshots three times, so I switched to a THROWAWAY Playwright spec
+    following admin.spec.ts's pattern (sign up, force emailVerified + role
+    admin in the DB, sign in). Verified against a real refunded order: list
+    marker present, input defaults to full ordered quantity, Return to stock
+    moved on_hand by exactly 2 and set stock_decision_at, marker then gone.
+  - THAT CHECK CAUGHT A DEFECT NO CODE REVIEW WOULD HAVE: the panel worked but
+    rendered as an unstyled block with colliding columns, directly beneath a
+    properly formatted Items table. MY plan omitted the CSS classes. Fixed by
+    reusing detail.module.css (styles.table/right/subheading) rather than
+    inventing styles; reviewer independently confirmed the Items table above
+    already right-aligns numeric columns the same way.
+  - Cleanup after verification: throwaway spec deleted, check orders and
+    panel-check admin users removed, and on_hand corrected back to 33 -- the
+    two runs restocked orders whose stock was never actually deducted, so they
+    had invented 4 units.
+Task 6: complete (controller-run, commit below)
+  - Registering this plan immediately caught TWO stale blocks, which is exactly
+    what the guard is for: the plan's parseLines predated Task 4's
+    blank-quantity fix, and its writeOffAction predated the try/catch I ordered
+    when Task 3's guard made writeOffOrderStock throw. Both synced to shipped.
+  - Guard 211 checks green with this plan registered.
+  - FULL VERIFICATION, all four commands:
+    620 tests / 50 files pass; tsc clean; lint clean; e2e 19 passed.
+    The payment e2e RAN (4.4s) with a live forwarder delivering 1 real
+    payment_intent.succeeded -- not a skip.
+
+## Standing instruction added 2026-09-27
+- "open a PR when the review comes back" -- PR AUTHORISED for
+  feat/refund-restock, but only AFTER the final whole-branch review returns and
+  its Critical/Important findings are resolved. Dispatch ONE fix subagent with
+  the complete findings list if there are any; do not open one fixer per
+  finding.
+- Still owed: the end-of-run PUSH NOTIFICATION ("ping me when it's all done").
+  Send it once the PR is open, or immediately if the run ends stuck instead.
+- Base for the final review: e11b037. Branch has 24 commits, tree clean, all
+  four verification commands green.
+
+## Final whole-branch review (opus): READY TO MERGE WITH FIXES, 0 Critical
+Both blocking findings were in TESTS, not behaviour -- places a real regression
+would have shipped green:
+  1. The repo's admin-gate test exists precisely because the session module is
+     mocked wholesale, and it had never been extended to restockAction /
+     writeOffAction. Deleting requireAdminUser() from either would have left the
+     whole suite passing. Fixed; load-bearing proven (deleting the call fails
+     only the new assertion).
+  2. NO MULTI-LINE TEST existed, and multi-line is the ORDINARY path -- the
+     panel emits one input per order line. Added both-succeed (two products, no
+     cross-crediting) and partial-rollback. Load-bearing proven: splitting the
+     writes into two transactions leaks on_hand 2 -> 4 and fails the test.
+  Also folded in: the reserved:0 decoy fixture, the duplicated stock() helper,
+  and UUID validation of orderItemId (a crafted POST previously produced a
+  Postgres 22P02 escaping as an opaque 500 instead of a friendly refusal).
+Third Important was a SPEC defect, fixed by the controller in c21d12f: a second
+refund after a decision never reopens the question, because stock_decision_at is
+already stamped. Documented in spec 7b; closing it needs a refunded_at column.
+Reviewer argued AGAINST tightening the refunded_cents > 0 proportionality, and
+I agree: mapping cents to units is unsound with shipping/tax/discounts, and a
+wrong derived count corrupts stock silently -- worse than an admin over-offering
+on a form the per-line bound and a human both still gate.
+Accepted with follow-ups (not blocking): unchecked row count on the inventory
+UPDATE (shared with commitStock/releaseStock); the quantity > 0 filter dropping
+non-integers at the primitive (note: Postgres ROUNDS on assignment to integer,
+so 1.5 would add 2); free-text "refund_restock" reason; write-off's read-then-
+write shape overwriting an earlier stock_decision_at; emoji-only pending marker
+needing an aria-label; no ORDER BY on order items; no way to LIST orders
+awaiting a decision (a partial refund leaves status paid/fulfilled, so the
+status filter cannot find them).
+FINAL VERIFICATION (controller-run): 624 tests / 50 files; tsc clean; lint
+clean; e2e 19 passed with the payment test genuinely RUN (1 real
+payment_intent.succeeded forwarded).
