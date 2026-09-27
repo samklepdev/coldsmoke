@@ -1198,7 +1198,7 @@ Task 1: complete (commits 290068a..27bb9c6, review Approved, zero findings)
 - Do NOT dispatch implementers in parallel; they collide in the same files.
 - Verify each task by its ARTIFACTS (commit + report file), not by trusting a
   completion notification -- two agents died silently earlier today.
-Task 2: committed 97185b9 + c421095 (review in flight at time of writing)
+Task 2: complete (commits 5c21f4d..c421095, review Approved, 0 Critical/Important)
   - restockOrderItems + RestockNotAllowedError in src/lib/inventory/index.ts.
     inventory.test.ts 12 -> 21 tests. Full suite 597/597, tsc + lint clean.
   - MUTATION RE-RUN BY THE CONTROLLER, not just reported: deleting the
@@ -1214,3 +1214,33 @@ Task 2: committed 97185b9 + c421095 (review in flight at time of writing)
     2026-09-19-coldsmoke-storefront-checkout.md). Same pattern as Task 1.
     This keeps happening because this feature touches files described by an
     older plan; it is expected work, not the implementer freelancing.
+  - Reviewer verified things worth keeping: the tx contract is TYPE-enforced
+    (Tx resolves to PgTransaction which has rollback(): never, Db does not, so
+    restockOrderItems(db, ...) will not compile) -- a caller cannot silently
+    get partial restocks. Duplicate orderItemIds in one call accumulate
+    CORRECTLY, because the second UPDATE sees the first's uncommitted
+    increment; same per-statement re-evaluation that makes double-submit safe.
+    Refusal-ordering staleness is not exploitable: inventoryState `committed`
+    is terminal, and refundedCents is monotonic (written only via Math.max).
+  - MINORS DEFERRED TO THE FINAL WHOLE-BRANCH REVIEW:
+    1. index.ts:258-263 -- the inventory UPDATE does not check rows touched,
+       unlike the claim above it. Unreachable today (reviewer traced FK and
+       reserveStock paths), and commitStock/releaseStock share the gap, so it
+       is pre-existing pattern rather than regression.
+    2. index.ts:205 -- filter(quantity > 0) silently DROPS negative and
+       non-integer quantities instead of refusing them. Task 4's parseLines
+       rejects them, so this is defence-in-depth on an exported primitive.
+    3. inventory.test.ts:447-462 -- "leaves reserved untouched" cannot tell
+       "untouched" from "clamped to zero": the fixture starts at reserved 0.
+       Seeding a non-zero reserved would make it discriminate.
+    4. NO MULTI-LINE TEST anywhere, so the partial-rollback promise in the doc
+       comment (line 1 restocked, line 2 refused -> both roll back) is never
+       actually executed. Brief-prescribed gap, not implementer error.
+    5. Duplicated stock() helper shadowing the module-level one.
+    6. "refund_restock" is a free-text reason with no shared constant; a later
+       admin-adjustment feature could spell a sibling inconsistently.
+  - POLICY NOTE FOR THE USER (plan-mandated, not a bug): the gate is
+    refundedCents > 0 with no proportionality, so a $1 partial refund on a
+    two-bottle order unlocks restocking BOTH bottles. Mitigated by the admin
+    choosing the quantities, and it is what the plan's global constraint
+    specifies -- but it is a policy choice the human may want to revisit.
