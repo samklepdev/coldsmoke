@@ -1275,7 +1275,7 @@ Task 3: complete (commits dfbbf2b..d68016a + guard fix, review Approved)
     plus a test, and mutation-verified: removing the guard fails that test.
   - This plan's restock.ts and restock.test.ts Create blocks re-synced after
     the fix, so Task 6's registration will not immediately fail on them.
-Task 4: committed 3d2b146 + 2a6fa7a (review in flight at time of writing)
+Task 4: complete (commits bf8043e..4be229f, Approved after 1 fix pass)
   - restockAction + writeOffAction + parseLines + StockState appended to
     src/app/(admin)/admin/orders/[id]/actions.ts. 4/4 focused, 608/608 full
     suite, tsc + lint clean.
@@ -1291,3 +1291,27 @@ Task 4: committed 3d2b146 + 2a6fa7a (review in flight at time of writing)
     Every task so far has touched a file that an older plan describes with a
     byte-for-byte Create block. This is expected and correct; the alternative
     is plans that lie about the shipped code.
+  - FIRST "Needs fixes" of the run, and it was earned. Three Importants:
+    1. parseLines accepted a BLANK field as a valid zero. Number("") is 0 and
+       Number.isInteger(0) is true, so malformed input passed as a legitimate
+       zero-unit line -- while the comment beside it claimed it refused exactly
+       that. Fixed by trimming and returning null before Number() is reached.
+       Reviewer confirmed no legitimate input changed meaning: Number() already
+       ignored surrounding whitespace, so " 2" parsed to 2 before and still does.
+    2 & 3 WERE MY DEFECTS, not the implementer's -- both test bodies came
+       verbatim from my brief:
+       * No test would have failed if the deliberate
+         `instanceof RestockNotAllowedError` discrimination were replaced with a
+         blanket catch-all. That rethrow exists so a genuine bug surfaces rather
+         than being flattened into a friendly message an admin reads as normal.
+       * The write-off test asserted only that onHand stayed 10 -- equally true
+         if the action did nothing at all. Same vacuous-test class as the
+         no-double-email test earlier today, and from the same cause: asserting
+         the absence of a change without asserting the change that SHOULD occur.
+    Both fixes were demonstrated load-bearing, not asserted: catch-all
+    replacement failed the new rethrow tests (5/7), no-op stub failed the
+    strengthened write-off test (6/7), restores gave 7/7.
+  - Tests 4 -> 7. fulfillAction/refundAction still hash-identical after the fix.
+  - LESSON WORTH CARRYING: my briefs keep specifying tests that assert a status
+    or an absence rather than a distinguishing effect. Task 5 and 6 briefs
+    should be read with that in mind.
