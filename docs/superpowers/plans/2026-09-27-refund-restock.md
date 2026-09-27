@@ -545,13 +545,30 @@ Note the import path for `completePaidOrder`-style siblings: this module imports
 Create `src/lib/orders/restock.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  vi,
+} from "vitest";
 import { eq } from "drizzle-orm";
 import { testDb } from "@/test/db";
 import { products, inventory, orders, orderItems } from "@/lib/db/schema";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
 let productId: string;
+
+// restock.ts imports `db` at module scope, so without this the module under
+// test would talk to the dev database instead of the test one. The dynamic
+// import below is what keeps the module load AFTER this mock is registered.
+vi.mock("@/lib/db/client", async () => {
+  const { testDb } = await import("@/test/db");
+  const shared = await testDb();
+  return { db: shared.db };
+});
 
 const ADDRESS = {
   name: "Test Buyer",
@@ -708,20 +725,7 @@ describe("awaitsStockDecision", () => {
 });
 ```
 
-This suite **must** mock `@/lib/db/client`, because `src/lib/orders/restock.ts` imports `db` at module scope and would otherwise talk to the dev database instead of the test one. Follow `src/lib/orders/reuse.test.ts:15-22` exactly — the mock, then a dynamic import of the module under test *after* it:
-
-```ts
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
-
-let ctx: Awaited<ReturnType<typeof testDb>>;
-vi.mock("@/lib/db/client", async () => {
-  const { testDb } = await import("@/test/db");
-  const shared = await testDb();
-  return { db: shared.db };
-});
-```
-
-The `const { restockRefundedOrder, ... } = await import("./restock");` line in the test above is what keeps the import after the mock. A static `import` at the top of the file would load the real client first and the mock would never apply.
+The `vi.mock` plus the dynamic `await import("./restock")` is the pattern from `src/lib/orders/reuse.test.ts:15-22`, and both halves are required. A static `import` at the top would load the real database client before the mock registered, and the suite would quietly write to the dev database.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -825,7 +829,9 @@ nothing restocked would leave the pending list while the stock stayed lost."
 
 Read `src/app/(admin)/admin/orders/[id]/refundAction.test.ts` first and copy its mocking of `requireAdminUser` exactly — that is how this suite authenticates, and inventing a different approach here will diverge from the rest of the admin tests.
 
-Create `src/app/(admin)/admin/orders/[id]/restockAction.test.ts` with the same `beforeAll`/`afterAll`/`beforeEach` harness as `src/lib/orders/restock.test.ts` (Task 3, Step 1), the same `refundedOrder` helper, and these tests:
+Add a new file at `src/app/(admin)/admin/orders/[id]/restockAction.test.ts`. Copy the whole harness from `src/lib/orders/restock.test.ts` (Task 3, Step 1) — the imports, the `vi.mock` of `@/lib/db/client`, `beforeAll`/`afterAll`/`beforeEach`, the `ADDRESS` constant and the `refundedOrder` helper — then import the actions dynamically the same way and add the tests below.
+
+(This step deliberately avoids the `Create \`path\`:` heading syntax: the drift guard parses those and compares them byte for byte against the shipped file, and the block below is a fragment rather than a whole file. Writing it as a `Create` block would guarantee a guard failure in Task 6.)
 
 ```ts
 describe("restockAction", () => {
@@ -1031,8 +1037,7 @@ Create `src/app/(admin)/admin/orders/[id]/StockPanel.tsx`:
 ```tsx
 "use client";
 
-import { useState } from "react";
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { restockAction, writeOffAction, type StockState } from "./actions";
 import { Button } from "@/components/ui/Button";
 
