@@ -153,6 +153,23 @@ describe("writeOffOrderStock", () => {
       .where(eq(inventory.productId, productId));
     expect(stock.onHand).toBe(10);
   });
+
+  it("refuses an order with no refund", async () => {
+    const { order } = await refundedOrder(1);
+    await ctx.db
+      .update(orders)
+      .set({ refundedCents: 0 })
+      .where(eq(orders.id, order.id));
+
+    await expect(
+      writeOffOrderStock({ orderId: order.id }),
+    ).rejects.toThrow();
+
+    // The damage a missing guard would do is deferred, not immediate: stamping
+    // an unrefunded order changes nothing today, but the order could never
+    // surface as awaiting a decision after a later refund.
+    expect((await reload(order.id)).stockDecisionAt).toBeNull();
+  });
 });
 
 describe("awaitsStockDecision", () => {

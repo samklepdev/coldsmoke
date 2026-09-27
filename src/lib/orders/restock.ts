@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { orders, type Order } from "@/lib/db/schema";
-import { restockOrderItems } from "@/lib/inventory";
+import { restockOrderItems, RestockNotAllowedError } from "@/lib/inventory";
 
 /**
  * Whether this order is waiting for someone to say what happened to its stock.
@@ -51,6 +51,26 @@ export async function restockRefundedOrder(args: {
 export async function writeOffOrderStock(args: {
   orderId: string;
 }): Promise<void> {
+  // Refuse when there is no refund to decide about. Without this, stamping an
+  // unrefunded order looks harmless -- awaitsStockDecision already returns
+  // false for it -- but it poisons the future: refund that order later and it
+  // will never surface as awaiting a decision, so its units go back to nobody
+  // and nothing says so. That is the silent drift this feature exists to end,
+  // reintroduced through the back door.
+  const [order] = await db
+    .select()
+    .from(orders)
+    .where(eq(orders.id, args.orderId))
+    .limit(1);
+
+  if (!order) {
+    throw new RestockNotAllowedError("no such order");
+  }
+
+  if (order.refundedCents <= 0) {
+    throw new RestockNotAllowedError("it has no refund recorded");
+  }
+
   await db
     .update(orders)
     .set({ stockDecisionAt: new Date() })
