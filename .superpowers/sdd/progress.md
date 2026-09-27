@@ -1334,3 +1334,13 @@ Task 5: complete (commits 937b2e7..23c3473, review Approved, 0 Critical/Importan
     panel-check admin users removed, and on_hand corrected back to 33 -- the
     two runs restocked orders whose stock was never actually deducted, so they
     had invented 4 units.
+Task 6: complete (controller-run, commit below)
+  - Registering this plan immediately caught TWO stale blocks, which is exactly
+    what the guard is for: the plan's parseLines predated Task 4's
+    blank-quantity fix, and its writeOffAction predated the try/catch I ordered
+    when Task 3's guard made writeOffOrderStock throw. Both synced to shipped.
+  - Guard 211 checks green with this plan registered.
+  - FULL VERIFICATION, all four commands:
+    620 tests / 50 files pass; tsc clean; lint clean; e2e 19 passed.
+    The payment e2e RAN (4.4s) with a live forwarder delivering 1 real
+    payment_intent.succeeded -- not a skip.
