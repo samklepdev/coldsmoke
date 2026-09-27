@@ -972,12 +972,22 @@ function parseLines(formData: FormData) {
   for (const [key, value] of formData.entries()) {
     if (!key.startsWith("quantity:")) continue;
 
-    const quantity = Number(value);
-    // A non-numeric or negative entry is a broken form, not a request to
-    // remove stock -- refuse rather than quietly coercing it to zero.
+    // No id after the colon can never match a real order item -- refuse it
+    // here rather than let it travel further and surface as a caught
+    // refusal downstream.
+    const orderItemId = key.slice("quantity:".length);
+    if (!orderItemId) return null;
+
+    const raw = typeof value === "string" ? value.trim() : "";
+    // Blank, non-numeric, or negative is a broken form, not a request to
+    // remove stock -- refuse rather than quietly coercing it to zero. (An
+    // empty string is falsy but Number("") is 0, which Number.isInteger
+    // accepts, so blank has to be caught before the numeric check runs.)
+    if (raw === "") return null;
+    const quantity = Number(raw);
     if (!Number.isInteger(quantity) || quantity < 0) return null;
 
-    lines.push({ orderItemId: key.slice("quantity:".length), quantity });
+    lines.push({ orderItemId, quantity });
   }
 
   return lines;
@@ -1030,7 +1040,14 @@ export async function writeOffAction(
     return { status: "error", error: "Unknown order." };
   }
 
-  await writeOffOrderStock({ orderId: orderId.data });
+  try {
+    await writeOffOrderStock({ orderId: orderId.data });
+  } catch (error) {
+    if (error instanceof RestockNotAllowedError) {
+      return { status: "error", error: error.message };
+    }
+    throw error;
+  }
 
   revalidatePath(`/admin/orders/${orderId.data}`);
   revalidatePath("/admin/orders");
@@ -1038,6 +1055,8 @@ export async function writeOffAction(
   return { status: "written-off" };
 }
 ```
+
+Note `writeOffOrderStock` throws `RestockNotAllowedError` for an unknown or unrefunded order, so `writeOffAction` needs the same try/catch as `restockAction`.
 
 `requireAdminUser()` returns a `SessionUser` (`src/lib/auth/session.ts:5-10`) whose `id` is a string — that is the value `inventory_adjustments.admin_user_id` records. Note `restockAction` above calls it twice; collapse that to a single `const admin = await requireAdminUser();` at the top, matching `writeOffAction`.
 
