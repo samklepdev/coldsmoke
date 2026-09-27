@@ -1387,6 +1387,7 @@ import { listOrdersForAdmin, ADMIN_PAGE_SIZE } from "@/lib/orders/adminList";
 import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
 import { orderStatus } from "@/lib/db/schema";
+import { awaitsStockDecision } from "@/lib/orders/restock";
 import styles from "./orders.module.css";
 
 /**
@@ -1453,6 +1454,9 @@ export default async function AdminOrdersPage({
                   <Link href={`/admin/orders/${order.id}`}>
                     {formatOrderNumber(order.orderNumber)}
                   </Link>
+                  {awaitsStockDecision(order) && (
+                    <span title="Refunded — awaiting a stock decision"> ⏳</span>
+                  )}
                 </td>
                 <td>{order.createdAt.toISOString().slice(0, 10)}</td>
                 <td>{order.email}</td>
@@ -1548,6 +1552,7 @@ import { formatOrderNumber } from "@/lib/orders/format";
 import { formatCents } from "@/lib/money";
 import { FulfillForm } from "./FulfillForm";
 import { RefundButton } from "./RefundButton";
+import { StockPanel } from "./StockPanel";
 import styles from "./detail.module.css";
 
 // Matches the list page's `.toISOString().slice(0, 10)` date — a plain date
@@ -1688,6 +1693,22 @@ export default async function AdminOrderDetailPage({
           />
         </>
       ) : null}
+
+      {order.refundedCents > 0 && (
+        <section>
+          <h2>Stock</h2>
+          <StockPanel
+            orderId={order.id}
+            decided={order.stockDecisionAt !== null}
+            lines={order.items.map((item) => ({
+              id: item.id,
+              name: item.name,
+              quantity: item.quantity,
+              restockedQuantity: item.restockedQuantity,
+            }))}
+          />
+        </section>
+      )}
     </section>
   );
 }
