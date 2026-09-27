@@ -1257,3 +1257,21 @@ Task 3: committed d68016a (review in flight at time of writing)
     instead of silently picking one. Plan line corrected by the controller.
     Root cause was mine: I edited the code block during pre-flight and did not
     re-read the Interfaces block above it.
+Task 3: complete (commits dfbbf2b..d68016a + guard fix, review Approved)
+  - Reviewer verified atomicity against REAL Postgres semantics rather than
+    assuming: client.ts:11-13 documents using postgres-js over the Neon HTTP
+    driver precisely because inventory needs real multi-statement transactions,
+    so db.transaction's rollback-on-throw is genuine BEGIN/ROLLBACK. That is
+    what makes "records no decision when the restock is rejected" a real test.
+  - Reviewer confirmed the db-client mock applies (vi.mock + dynamic import,
+    no static import leak). Worth noting because the failure mode is invisible:
+    tests would still PASS while writing to the DEV database.
+  - CONTROLLER RESOLVED THE REVIEW'S ONE WARNING, and it was a real hole:
+    writeOffOrderStock had no guard, so an out-of-band caller could stamp
+    stockDecisionAt on an order that was never refunded. Harmless today
+    (awaitsStockDecision is already false for it), but poisonous later --
+    refund that order afterwards and it would NEVER appear as awaiting a
+    decision. Added refusals for "no such order" and "no refund recorded",
+    plus a test, and mutation-verified: removing the guard fails that test.
+  - This plan's restock.ts and restock.test.ts Create blocks re-synced after
+    the fix, so Task 6's registration will not immediately fail on them.
