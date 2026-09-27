@@ -109,7 +109,25 @@ STRIPE_API_KEY="$STRIPE_SECRET_KEY" stripe listen --events ... --forward-to ...
 
 Plan 1 is implemented and verified end to end against real Stripe: a test card
 pays, the webhook marks the order paid, stock commits, the cart clears, and a
-replayed event changes nothing. Four things are still worth knowing.
+replayed event changes nothing. A webhook that never arrives is no longer fatal
+either — `reconcilePendingOrder` asks Stripe directly when a pending order's
+confirmation page renders, and completes it through the same path the webhook
+uses. Six things are still worth knowing.
+
+- **No customer email can be delivered — [#13](https://github.com/samklepdev/coldsmoke/issues/13).**
+  No sending domain is verified in Resend, so order confirmations and the
+  contact form reach nobody but the Resend account owner. The failure is silent
+  by design: a failed send is swallowed so it cannot 500 an order that was
+  actually paid. Parked until the product has a settled name, since the intended
+  domain may change. This has already cost a real customer their confirmation
+  email.
+- **Post-payment side effects are never retried — [#12](https://github.com/samklepdev/coldsmoke/issues/12).**
+  Clearing the cart and sending the confirmation run after the payment is
+  committed, inside a catch that swallows everything. Once the status is `paid`,
+  nothing re-runs them: reconciliation exits at `status !== "pending"` and a
+  webhook retry is a ledger no-op. Fixing it needs a `completed_at` column that
+  distinguishes "paid" from "paid and finished". Compounds with #13 — a dropped
+  confirmation is currently both likely and unrecoverable.
 
 - **Checkout requires Stripe Tax to be active.** `createPendingOrder` calls
   `calculateTax` and deliberately blocks if it fails — charging a guessed tax
