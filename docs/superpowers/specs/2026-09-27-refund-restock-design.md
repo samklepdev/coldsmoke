@@ -186,6 +186,36 @@ of work and is not attempted here. The failure is at least bounded: the units
 stay deducted, which is the conservative direction — the store under-sells rather
 than overselling something it does not have.
 
+## 7b. What this does not fix
+
+**A second refund after a decision never reopens the question.** Awaiting-ness is
+derived as `refunded_cents > 0 AND stock_decision_at IS NULL` (§4). Partial
+refunds are first-class in this system — `recordRefund` leaves the status
+`paid`/`fulfilled` and only grows `refunded_cents` — so this sequence loses
+units silently:
+
+1. Refund one bottle of a two-bottle order. The order surfaces as awaiting a
+   decision.
+2. The admin restocks that one bottle, or writes it off. `stock_decision_at` is
+   stamped.
+3. The second bottle is refunded later. `stock_decision_at` is already set, so
+   the marker never returns and nobody is asked about the second bottle's units.
+
+That is the original silent-drift failure in a narrower form, and this design
+does not close it. It was found by the final whole-branch review rather than
+during design, and the predicate in §4 is what mandates it — so it is a defect
+in this spec, not in the implementation of it.
+
+Closing it properly needs a `refunded_at` column (or equivalent), so the
+decision can be compared against the *recency* of the refund that prompted it
+rather than merely its existence. There is no such column today, which is the
+actual blocker; `orders` records only the cumulative `refunded_cents`. Until
+then, an admin who issues a second partial refund has to remember to revisit
+the order's stock themselves.
+
+Note the related limitation in §7: both cases are the same underlying shape —
+something changes after the system has stopped watching.
+
 ## 8. Testing
 
 Real Postgres, no mocking of the unit under test, following the existing suites.
