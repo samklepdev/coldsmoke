@@ -1106,9 +1106,14 @@ first and reconcile later on a genuine cold load), insert a pending order, and
 POINT IT AT THE BROWSER'S OWN CART. That last part is the trap -- an order
 pointing at its own seeded cart reproduces nothing, because the badge counts
 the browser's cart, so clearing a different cart leaves the badge untouched.
-TEST ARTIFACTS LEFT IN THE DEV DB: orders 1034 and 1035 (badge-test@example.com,
-now paid) plus a few orphan carts. Harmless but not cleaned up -- delete if
-they get in the way.
+TEST ARTIFACTS CLEANED UP at the user's request: orders 1034/1035
+(badge-test@example.com), their two reconcile: ledger rows, and the three
+orphan seed carts are gone. Deliberately NOT deleted: cart 9db1311e (order 1030
+points at it too -- the delete was guarded on the cart being unreferenced
+precisely so this could not be taken out), order 1030's real ledger row, and
+the e2e-created orders/carts, which appeared mid-cleanup from the last
+test:e2e run and are not mine to remove. Verified afterwards: 1030 still paid,
+items_left 0.
 Also observed: e2e order 1033 has BOTH an evt_ row and a reconcile: row, so
 reconciliation DOES fire during e2e and reaches markOrderPaid -- it just usually
 loses the race. That corrects the final review's claim that reconciliation never
