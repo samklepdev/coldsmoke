@@ -55,10 +55,21 @@ work — a decision quietly disappearing. So: do not restock, and surface it.
   order-level and all-or-nothing. It cannot express "1 of 2 came back", and
   overloading it would break the single-transition claim that makes commit and
   release idempotent.
-- *A `stock_returns` ledger table.* The right shape if inventory movements ever
-  need history ("why is stock 47 when I bought 50"). More machinery than this
-  feature needs today, and `restocked_quantity` migrates into a ledger cleanly
-  if that day comes.
+- *A new `stock_returns` ledger table.* Unnecessary — see below, a ledger
+  already exists.
+
+**Amended 2026-09-27, before the plan was written:** `inventory_adjustments`
+(`product_id`, `delta`, `reason`, `admin_user_id`, `created_at`) is already
+migrated and **entirely unused** — no writers, no readers, no rows. It was
+evidently created for exactly this kind of movement and never wired up. A
+restock therefore also writes an adjustment row in the same transaction, making
+this feature the ledger's first writer.
+
+To be clear about the division of labour: `restocked_quantity` remains the
+**guard** — it carries the per-line bound that makes over-restocking impossible.
+The ledger is **history**, and is never read to decide whether a restock is
+allowed. Summing ledger rows to enforce the bound would be slower and far easier
+to get wrong under concurrency.
 - *Derive units from the refunded amount.* Shipping, tax and discounts mean the
   amount does not divide cleanly into units, and a wrong guess corrupts stock
   silently.
@@ -90,11 +101,15 @@ restockOrderItems(
   tx: Tx,
   orderId: string,
   lines: { orderItemId: string; quantity: number }[],
+  adminUserId: string,
 ): Promise<void>
 ```
 
-For each line it adds `quantity` to that product's `inventory.on_hand` and to the
-line's `restocked_quantity`.
+For each line it adds `quantity` to that product's `inventory.on_hand`, adds it to
+the line's `restocked_quantity`, and inserts an `inventory_adjustments` row
+(`delta` = +quantity, `reason` = `"refund_restock"`, `admin_user_id` = the acting
+admin). All three happen in the caller's transaction, so the ledger cannot record
+a movement that did not occur.
 
 **The bound is the idempotency guarantee.** It is enforced in the write, not by
 reading first:
@@ -183,6 +198,8 @@ Real Postgres, no mocking of the unit under test, following the existing suites.
 - leaves `reserved` untouched
 - refuses an order whose `inventory_state` is not `committed`
 - refuses an order with no refund recorded
+- writes one `inventory_adjustments` row per restocked line, with the acting
+  admin's id, and writes none at all when the restock is rejected
 
 The admin action, mirroring `refundAction.test.ts`:
 
