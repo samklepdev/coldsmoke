@@ -1163,3 +1163,16 @@ the ledger is history and is never read to authorise a restock.
 
 ## Progress
 (nothing executed yet)
+
+## Standing instructions from the user (2026-09-27)
+- "keep going through the rest of the tasks" -- run Tasks 1-6 continuously, no
+  check-ins between tasks. Only stop for a BLOCKED status that cannot be
+  resolved, or a finding that contradicts the plan (that is the human's call).
+- "ping me when it's all done" -- send a PUSH NOTIFICATION at the END of the
+  whole run, not per task. Send it whether the run ends green or stuck: if
+  something blocks partway, they still want to know at that moment rather than
+  discovering silence later.
+- Branch feat/refund-restock, base e11b037. All six briefs pre-generated.
+- Do NOT dispatch implementers in parallel; they collide in the same files.
+- Verify each task by its ARTIFACTS (commit + report file), not by trusting a
+  completion notification -- two agents died silently earlier today.
