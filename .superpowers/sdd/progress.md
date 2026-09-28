@@ -1389,3 +1389,25 @@ status filter cannot find them).
 FINAL VERIFICATION (controller-run): 624 tests / 50 files; tsc clean; lint
 clean; e2e 19 passed with the payment test genuinely RUN (1 real
 payment_intent.succeeded forwarded).
+
+# ============================================================
+# PLAN: Discount Code Admin (2026-09-28)
+# Plan: docs/superpowers/plans/2026-09-28-discount-admin.md
+# Spec: docs/superpowers/specs/2026-09-28-discount-admin-design.md
+# Branch: feat/discount-codes
+# Base commit: 5faf63d
+# ============================================================
+
+## Pre-flight review (controller, before Task 1)
+- validate.test.ts EXISTS with 16 tests in two describes. Task 1 had a
+  create-if-missing branch; resolved to append-only, with the before/after
+  counts stated (16 -> 23) so an overwrite is detectable.
+- Renamed a helper in the plan's page.tsx from `window` to `dateRange`. It
+  shadowed the global.
+- Verified src/lib/discounts/index.ts still has `export * from "./validate"`,
+  which is what lets the page import discountStatus from "@/lib/discounts".
+- Stale task-*-report.md from the restock run deleted; a reviewer read one of
+  those earlier in this project and produced a bogus finding.
+
+## Progress
+(nothing executed yet)
