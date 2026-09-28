@@ -1542,7 +1542,7 @@ Task 3: complete (commits 36205e4..0b1c862, Approved after 1 fix pass)
     no throw, so an unknown id matches zero rows and is a safe no-op. The
     missing try/catch in deactivateDiscountAction is fine.
   - Tests 7 -> 15. Full suite 653/653.
-Task 4: committed ec77d77 + 3eecee8 (review in flight at time of writing)
+Task 4: complete (commits 5f23744..3eecee8, review Approved, 0 Critical/Important)
   - page.tsx + DiscountForms.tsx + discounts.module.css + nav link.
     tsc/lint clean, FULL SUITE 653/653.
   - The full-suite lesson took: this implementer ran everything, caught
@@ -1570,3 +1570,17 @@ Task 4: committed ec77d77 + 3eecee8 (review in flight at time of writing)
     (Live/Scheduled/Expired/Exhausted/Off). Purely presentational.
   - Cleanup: throwaway spec deleted, created code and check admin users removed
     from the dev DB. fiveoff/smoke10 left alone -- pre-existing, not mine.
+  - Reviewer resolved the deactivate-gating question the controller raised:
+    expired and exhausted are PERMANENT, monotonic states (timesRedeemed only
+    increments; dates do not move), so a code in either can never become usable
+    again regardless of `active`. Omitting the control there costs nothing.
+  - Reviewer also confirmed the page CALLS discountStatus rather than
+    re-deriving the condition inline, which is the entire point of Task 1.
+  - ONE OF ITS MINORS IS ALREADY CLOSED BY EVIDENCE it did not have: it flagged
+    terms()'s fixed-amount branch (formatCents) as unexercised. The controller's
+    browser check did hit it -- pre-existing code `fiveoff` rendered as
+    "$5.00 off over $40.00" in the screenshot. No follow-up needed.
+  - Remaining Minors for the final review: no unit tests for the pure helpers
+    terms()/dateRange() (consistent with this repo not unit-testing FulfillForm
+    or RefundButton either); <th> cells lack scope="col"; and the status column
+    renders raw lowercase values where spec section 6 wrote them capitalised.
