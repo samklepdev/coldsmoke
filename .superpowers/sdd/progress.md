@@ -1584,3 +1584,15 @@ Task 4: complete (commits 5f23744..3eecee8, review Approved, 0 Critical/Importan
     terms()/dateRange() (consistent with this repo not unit-testing FulfillForm
     or RefundButton either); <th> cells lack scope="col"; and the status column
     renders raw lowercase values where spec section 6 wrote them capitalised.
+Task 5: complete (commit a51cac2)
+  - Round-trip test verified by the controller to actually CROSS THE SEAM: it
+    creates with the new writer (createDiscountCode) and reads with the
+    pre-existing reader (lookupDiscount/validateDiscount/redeemDiscount),
+    looking the code up as "RoundTrip10" to prove case normalisation works in
+    both directions, then asserts timesRedeemed moved to 1.
+  - Registering this plan flagged exactly ONE stale block:
+    discounts/actions.ts, Task 3's review-corrected parsing layer. Task 2's
+    isDuplicate had already been synced earlier on this branch. Guard 220/220.
+  - FULL VERIFICATION (controller-run, all four commands):
+    663 tests / 53 files; tsc clean; lint clean; e2e 19 passed with the payment
+    test genuinely RUN (3.9s, 1 real payment_intent.succeeded forwarded).
