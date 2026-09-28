@@ -1542,3 +1542,31 @@ Task 3: complete (commits 36205e4..0b1c862, Approved after 1 fix pass)
     no throw, so an unknown id matches zero rows and is a safe no-op. The
     missing try/catch in deactivateDiscountAction is fine.
   - Tests 7 -> 15. Full suite 653/653.
+Task 4: committed ec77d77 + 3eecee8 (review in flight at time of writing)
+  - page.tsx + DiscountForms.tsx + discounts.module.css + nav link.
+    tsc/lint clean, FULL SUITE 653/653.
+  - The full-suite lesson took: this implementer ran everything, caught
+    layout.tsx drifting against 2026-09-20-admin-orders.md immediately, and
+    synced it in a separate docs commit. That is the failure Task 1 shipped.
+  - CONTROLLER DID THE BROWSER CHECK (throwaway Playwright spec, admin.spec.ts
+    pattern: sign up, force emailVerified + role=admin, sign in). Verified by
+    RENDERING, not reading: nav link reaches the page; creating a 15%/min $25
+    code shows "Created <code>."; the row reports status "live" and terms
+    "15% off over $25.00"; switching Type to fixed changes the field label from
+    PERCENT OFF to AMOUNT OFF ($); Deactivate flips the row to "off" and
+    active=false in the DB.
+  - My first check spec FAILED on my own ambiguous selector -- getByLabel
+    ("Percent off") matched both the select's option text and the input label.
+    That was my test's bug, not the app's. Fixed with getByRole("spinbutton").
+  - TWO THINGS ONLY RENDERING REVEALED:
+    1. Pre-existing codes fiveoff and smoke10 (null ends_at, created before
+       this feature) render as "now -> no end" and stay usable. That is the
+       "app stricter than schema, existing rows untouched" decision working in
+       practice, not just in the spec.
+    2. Fixed amounts render as money in the terms column ("$5.00 off over
+       $40.00"), so the cents conversion is right end to end.
+  - MINOR for the final review: the status column renders the raw lowercase
+    value ("live", "off"). Spec section 6 wrote them capitalised
+    (Live/Scheduled/Expired/Exhausted/Off). Purely presentational.
+  - Cleanup: throwaway spec deleted, created code and check admin users removed
+    from the dev DB. fiveoff/smoke10 left alone -- pre-existing, not mine.
