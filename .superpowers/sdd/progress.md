@@ -1596,3 +1596,67 @@ Task 5: complete (commit a51cac2)
   - FULL VERIFICATION (controller-run, all four commands):
     663 tests / 53 files; tsc clean; lint clean; e2e 19 passed with the payment
     test genuinely RUN (3.9s, 1 real payment_intent.succeeded forwarded).
+
+## Final whole-branch review (2026-09-28)
+CONTROLLER-RUN, NOT DISPATCHED. The session's harness instructions forbid
+spawning subagents unless the human asks, so the "most capable model" reviewer
+the standing instruction calls for was me, reading 186df59..7102854 directly.
+Noted because it costs the independence every other review on this branch had:
+a self-review cannot catch what the author's own blind spot created. The two
+findings below are both things the previous reviewers DID look at and pass.
+- IMPORTANT 1, fixed in 060fd48: parseOptionalInt laundered an unparseable
+  maxRedemptions into null, and null means NO CAP. A posted "2.5" or "abc"
+  created an UNCAPPED code while reporting a normal "Created" to the admin.
+  This is the FIFTH instance of the same shape on this branch (four in the
+  Task 3 review) and the THIRD across the project -- coerce-instead-of-refuse
+  is this codebase's characteristic defect, not a one-off. The Task 3 fix pass
+  rewrote the value/type/date parsing into refuse-or-fail and left the helper
+  one function below it untouched, because the review's brief listed four
+  fields and nobody asked "what else parses input in this file".
+  Proven red first: expected 'error', received 'created'.
+- IMPORTANT 2, fixed in be465dd: the list ordered by desc(id) on a random v4
+  uuid -- arbitrary order, reading as newest-first, against a spec that says
+  "Sorted newest first". Eight codes inserted in order rendered
+  aaa1,bbb2,eee5,ccc3,fff6,hhh8,ddd4,ggg7: the newest sixth of eight.
+  WHY TASK 4's BROWSER CHECK MISSED IT, and this is the transferable lesson:
+  Playwright finds a row WHEREVER IT SITS. "The code I just created is
+  visible", "the row says live", "Deactivate flips it to off" all pass on a
+  scrambled list. Rendering something is not the same as rendering it in the
+  right place; assert ORDER explicitly or it is untested.
+  Re-checked by rendering, with row order asserted this time: created
+  zzcheck1..6 through the form, page returned zzcheck6..1 top-to-bottom with
+  the two pre-existing rows below them.
+  Cost a migration the plan had promised not to need (0009, created_at,
+  additive, default now()): discount_codes was the only table needing a
+  creation time that lacked one, and desc(id) had been papering over it.
+  Rows predating the column share the migration timestamp, so TIES ARE THE
+  NORMAL CASE on a real database, not an edge case -- hence the tie-break on
+  code, and a test for it.
+  Mutation-verified: reverting to desc(id) fails both new tests, restoring
+  passes, file byte-identical after.
+  The query moved page.tsx -> admin.ts. Inlined in a Server Component it was
+  not reachable by a test at all, which is the reason it shipped unverified.
+- MY OWN first browser spec failed on the race admin.spec.ts documents in a
+  comment three lines long: navigating before the session lands bounces off
+  the gate. Second time on this branch a controller's throwaway spec was the
+  broken thing rather than the app.
+- Adding created_at broke 7 tsc errors in validate.test.ts fixtures that the
+  full vitest suite could not see -- vitest does not typecheck. `npm test`
+  green is not `npx tsc --noEmit` green; this is why the plan lists four
+  verification commands and not one.
+- Minors from Tasks 1-4 reviewed and left as-is: raw lowercase status values
+  vs the spec's capitalised ones, <th> without scope="col", no unit tests for
+  terms()/dateRange(), isDuplicate's doc comment. None affect behaviour.
+- FULL VERIFICATION, post-fix, on the committed tree (all four commands):
+  667 tests / 53 files; tsc clean; lint clean; e2e 19 passed with the payment
+  test genuinely RUN (3.8s, real payment_intent.succeeded forwarded --
+  evt_3UKi7aC4O5W0d4Lo2djlcVhh). The first e2e run SKIPPED it because no
+  `stripe listen` was up; "19 passed" and "18 passed, 1 skipped" look alike at
+  a glance and the skipped one is the only test that touches money.
+- PR SCOPING, the trap the standing instruction names: `git log
+  origin/main..HEAD` showed 24 commits, not the discount work alone. Local
+  main was one commit ahead of origin/main (186df59, designs for BOTH this
+  feature and product/inventory admin) and had never been pushed. Human's
+  call: push main first so it drops out of the PR diff. The product-inventory
+  -admin plan (e19acb0, 1876 lines) still rides along and is named in the PR
+  body rather than rewritten out of history.
