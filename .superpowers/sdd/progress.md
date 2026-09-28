@@ -1530,3 +1530,15 @@ Task 3 review: NEEDS FIXES -> fixed in 0b1c862, 15/15, full suite 653/653.
   file-changed-on-disk notice, which fires when a mutation test copies the
   original back over -- not an injection. It was right to flag rather than
   silently comply; the restores were verified byte-for-byte clean.
+Task 3: complete (commits 36205e4..0b1c862, Approved after 1 fix pass)
+  - Re-review verified the asymmetric anchoring is ORDERING-COHERENT, which is
+    the risk my fix instruction created: same calendar date for start and end
+    gives 00:00:00.000Z < 23:59:59.999Z (a valid same-day window, never equal),
+    and a reversed range still comes out invalid. Also hand-checked leap day
+    2028-02-29 (valid, round-trips) and 2099-12-32 (year mismatch, refused).
+    No legitimate date is rejected.
+  - Reviewer's carried-forward WARNING about deactivateDiscountCode throwing on
+    an unknown id: CONTROLLER ALREADY RESOLVED IT -- it is a plain UPDATE with
+    no throw, so an unknown id matches zero rows and is a safe no-op. The
+    missing try/catch in deactivateDiscountAction is fine.
+  - Tests 7 -> 15. Full suite 653/653.
