@@ -30,6 +30,7 @@ const PLANS = [
   "docs/superpowers/plans/2026-09-25-us-state-dropdown.md",
   "docs/superpowers/plans/2026-09-25-payment-reconciliation.md",
   "docs/superpowers/plans/2026-09-27-refund-restock.md",
+  "docs/superpowers/plans/2026-09-28-discount-admin.md",
 ].map((p) => path.join(ROOT, p));
 
 // Joined with blank lines: the block parser is anchored on "Create `path`:"
