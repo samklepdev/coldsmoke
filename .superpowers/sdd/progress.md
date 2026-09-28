@@ -1435,3 +1435,14 @@ Task 1: committed 963018e (review in flight at time of writing)
   - Controller also checked the thing the function exists for: the check order
     in discountStatus (active -> startsAt -> endsAt -> maxRedemptions) matches
     validateDiscount's exactly, and minSubtotal is correctly absent.
+- "open a PR when it's done" (2026-09-28): PR AUTHORISED for
+  feat/discount-codes, but only AFTER all five tasks are complete, the final
+  whole-branch review has returned, and its Critical/Important findings are
+  resolved. Dispatch ONE fix subagent with the complete findings list if there
+  are any -- not one fixer per finding.
+  Order: Tasks 1-5 -> final whole-branch review (most capable model) -> fixes
+  -> full verification -> PR -> push notification.
+  Before opening it, CHECK WHAT WOULD ACTUALLY MERGE: `git log origin/main..HEAD`.
+  On the reconciliation branch this caught 13 unrelated commits that would have
+  landed under a misleading PR title, because local main was ahead of
+  origin/main and had never been pushed.
