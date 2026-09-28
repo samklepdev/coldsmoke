@@ -1416,8 +1416,10 @@ payment_intent.succeeded forwarded).
 - "keep going through the rest of the tasks" -- run Tasks 1-5 continuously, no
   check-ins between tasks. Stop only for a BLOCKED status that cannot be
   resolved, or a finding that contradicts the plan (the human's call).
-- No push notification requested for THIS run (the restock run had one; do not
-  assume it carries over).
+- "ping me when it's all done" (asked mid-run, 2026-09-28): send a PUSH
+  NOTIFICATION at the END of the whole run, not per task. Send it whether the
+  run ends green or stuck -- if something blocks partway they still want to
+  know at that moment rather than discovering silence later.
 - Do NOT dispatch implementers in parallel; they collide in the same files.
 - Verify each task by ARTIFACTS (commit + report file), not by trusting a
   completion notification -- two agents died silently on 2026-09-25.
@@ -1425,3 +1427,11 @@ payment_intent.succeeded forwarded).
   establish an admin session. The working method is a throwaway Playwright
   spec following admin.spec.ts -- sign up, force emailVerified + role=admin in
   the DB, sign in. That is how the restock panel's missing CSS was caught.
+Task 1: committed 963018e (review in flight at time of writing)
+  - discountStatus + DiscountStatus in validate.ts. 16 -> 23 tests.
+  - Controller verified INDEPENDENTLY, not from the report: test count is 23,
+    and diffing test NAMES before/after shows zero pre-existing tests lost
+    (the failure mode the brief warned about for an append).
+  - Controller also checked the thing the function exists for: the check order
+    in discountStatus (active -> startsAt -> endsAt -> maxRedemptions) matches
+    validateDiscount's exactly, and minSubtotal is correctly absent.
