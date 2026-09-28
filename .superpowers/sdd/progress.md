@@ -1427,7 +1427,7 @@ payment_intent.succeeded forwarded).
   establish an admin session. The working method is a throwaway Playwright
   spec following admin.spec.ts -- sign up, force emailVerified + role=admin in
   the DB, sign in. That is how the restock panel's missing CSS was caught.
-Task 1: committed 963018e (review in flight at time of writing)
+Task 1: complete (commit 963018e, review Approved, 0 Critical/Important)
   - discountStatus + DiscountStatus in validate.ts. 16 -> 23 tests.
   - Controller verified INDEPENDENTLY, not from the report: test count is 23,
     and diffing test NAMES before/after shows zero pre-existing tests lost
@@ -1446,3 +1446,15 @@ Task 1: committed 963018e (review in flight at time of writing)
   On the reconciliation branch this caught 13 unrelated commits that would have
   landed under a misleading PR title, because local main was ahead of
   origin/main and had never been pushed.
+  - Reviewer verified the two cross-function agreements that matter, rather
+    than assuming them: `endsAt === now` is treated identically by
+    discountStatus and validateDiscount (both use `endsAt < now`, so neither
+    calls it expired), and the cap threshold agrees across all THREE sites --
+    discountStatus, validateDiscount, and redeemDiscount's SQL guard
+    (`timesRedeemed < maxRedemptions`), which is the thing that actually
+    refuses an increment. No daylight between "list says live" and "cart
+    accepts it".
+  - MINOR for the final review: the "ignores the minimum subtotal" test is
+    documentation-via-test. discountStatus has no subtotalCents parameter, so
+    no signature-conforming implementation could branch on it; the type is the
+    real guardrail. Harmless, but it is not the guard it reads as.
