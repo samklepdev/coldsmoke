@@ -167,6 +167,31 @@ describe("createDiscountAction", () => {
     expect(await ctx.db.select().from(discountCodes)).toHaveLength(0);
   });
 
+  it("refuses an unparseable redemption cap rather than creating an uncapped code", async () => {
+    // Blank legitimately means "no cap". A typo must not collapse into that
+    // same meaning: that turns a slip into the unbounded promotion the
+    // required end date exists to prevent.
+    const state = await createDiscountAction(
+      { status: "idle" },
+      form({ ...VALID_FIELDS, maxRedemptions: "2.5" }),
+    );
+
+    expect(state.status).toBe("error");
+    expect(await ctx.db.select().from(discountCodes)).toHaveLength(0);
+  });
+
+  it("still treats a blank redemption cap as unlimited", async () => {
+    // The refusal above must not cost the legitimate "no cap" choice.
+    const state = await createDiscountAction(
+      { status: "idle" },
+      form({ ...VALID_FIELDS, code: "nocap", maxRedemptions: "" }),
+    );
+
+    expect(state).toEqual({ status: "created", code: "nocap" });
+    const [row] = await ctx.db.select().from(discountCodes);
+    expect(row.maxRedemptions).toBeNull();
+  });
+
   it("converts a non-zero minSubtotal from dollars to cents", async () => {
     await createDiscountAction(
       { status: "idle" },

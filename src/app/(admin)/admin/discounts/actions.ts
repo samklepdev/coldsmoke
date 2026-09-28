@@ -61,12 +61,29 @@ function parseDate(
   return { kind: "valid", date };
 }
 
-function parseOptionalInt(value: FormDataEntryValue | null): number | null {
+type ParsedCount =
+  | { kind: "blank" }
+  | { kind: "invalid" }
+  | { kind: "valid"; count: number };
+
+/**
+ * Blank legitimately means "no cap". Unparseable input must NOT collapse into
+ * that same meaning -- returning null for "2.5" or "abc" turns a typo into an
+ * uncapped promotion, the unbounded liability the required end date exists to
+ * prevent. Refused rather than defaulted, like `type`, and for the same
+ * reason: a Server Action is reachable by POST without the form rendering.
+ *
+ * Out-of-range whole numbers (0, -5) are deliberately passed through: they
+ * parse fine and createDiscountCode refuses them with a specific message.
+ */
+function parseCount(value: FormDataEntryValue | null): ParsedCount {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw) return null;
+  if (!raw) return { kind: "blank" };
 
   const parsed = Number(raw);
-  return Number.isInteger(parsed) ? parsed : null;
+  if (!Number.isInteger(parsed)) return { kind: "invalid" };
+
+  return { kind: "valid", count: parsed };
 }
 
 export async function createDiscountAction(
@@ -124,13 +141,22 @@ export async function createDiscountAction(
   // fall through to that same meaning -- it is refused above.
   const startsAt = startsAtParsed.kind === "valid" ? startsAtParsed.date : null;
 
+  const capParsed = parseCount(formData.get("maxRedemptions"));
+  if (capParsed.kind === "invalid") {
+    return {
+      status: "error",
+      error: "Enter a whole number of redemptions, or leave it blank.",
+    };
+  }
+  const maxRedemptions = capParsed.kind === "valid" ? capParsed.count : null;
+
   try {
     const created = await createDiscountCode({
       code: String(formData.get("code") ?? ""),
       type,
       value,
       minSubtotalCents: Math.round(minSubtotalDollars * 100),
-      maxRedemptions: parseOptionalInt(formData.get("maxRedemptions")),
+      maxRedemptions,
       startsAt,
       endsAt,
     });
