@@ -49,12 +49,13 @@ async function rows() {
 
 describe("createDiscountCode", () => {
   it("persists every field", async () => {
+    const startsAt = new Date("2026-01-01T00:00:00Z");
     const created = await createDiscountCode({
       ...VALID,
       code: "spring15",
       minSubtotalCents: 5000,
       maxRedemptions: 100,
-      startsAt: new Date("2026-01-01T00:00:00Z"),
+      startsAt,
     });
 
     expect(created.code).toBe("spring15");
@@ -64,7 +65,12 @@ describe("createDiscountCode", () => {
     expect(created.maxRedemptions).toBe(100);
     expect(created.timesRedeemed).toBe(0);
     expect(created.active).toBe(true);
-    expect(created.endsAt).not.toBeNull();
+    // By VALUE, not just not-null. Asserting only that dates are present let
+    // the insert drop startsAt entirely -- taking every scheduled promotion
+    // live on creation -- with all 170 tests in src/lib/discounts and src/app
+    // still passing.
+    expect(created.startsAt).toEqual(startsAt);
+    expect(created.endsAt).toEqual(VALID.endsAt);
   });
 
   it("lowercases the code", async () => {
@@ -148,9 +154,14 @@ describe("deactivateDiscountCode", () => {
 describe("listDiscountCodes", () => {
   it("returns codes newest first", async () => {
     // The admin list used to order by `id`, which is a random v4 uuid: with
-    // eight codes the one just created rendered sixth. Eight, not two --
-    // a random order agrees with the right one too often at small n.
-    const codes = ["aaa1", "bbb2", "ccc3", "ddd4", "eee5", "fff6", "ggg7", "hhh8"];
+    // eight codes the one just created rendered sixth.
+    //
+    // Inserted in an order that is deliberately NOT alphabetical. An ascending
+    // fixture made this test pass for the wrong reason: the tie-break on
+    // `code` reproduced the expected reversal on its own, so dropping the
+    // createdAt term entirely -- the whole point of migration 0009 -- left the
+    // suite green.
+    const codes = ["hhh8", "aaa1", "ggg7", "ccc3", "fff6", "bbb2", "eee5", "ddd4"];
     for (const code of codes) {
       await createDiscountCode({ ...VALID, code });
     }
