@@ -243,12 +243,13 @@ async function rows() {
 
 describe("createDiscountCode", () => {
   it("persists every field", async () => {
+    const startsAt = new Date("2026-01-01T00:00:00Z");
     const created = await createDiscountCode({
       ...VALID,
       code: "spring15",
       minSubtotalCents: 5000,
       maxRedemptions: 100,
-      startsAt: new Date("2026-01-01T00:00:00Z"),
+      startsAt,
     });
 
     expect(created.code).toBe("spring15");
@@ -258,7 +259,12 @@ describe("createDiscountCode", () => {
     expect(created.maxRedemptions).toBe(100);
     expect(created.timesRedeemed).toBe(0);
     expect(created.active).toBe(true);
-    expect(created.endsAt).not.toBeNull();
+    // By VALUE, not just not-null. Asserting only that dates are present let
+    // the insert drop startsAt entirely -- taking every scheduled promotion
+    // live on creation -- with all 170 tests in src/lib/discounts and src/app
+    // still passing.
+    expect(created.startsAt).toEqual(startsAt);
+    expect(created.endsAt).toEqual(VALID.endsAt);
   });
 
   it("lowercases the code", async () => {
@@ -342,9 +348,14 @@ describe("deactivateDiscountCode", () => {
 describe("listDiscountCodes", () => {
   it("returns codes newest first", async () => {
     // The admin list used to order by `id`, which is a random v4 uuid: with
-    // eight codes the one just created rendered sixth. Eight, not two --
-    // a random order agrees with the right one too often at small n.
-    const codes = ["aaa1", "bbb2", "ccc3", "ddd4", "eee5", "fff6", "ggg7", "hhh8"];
+    // eight codes the one just created rendered sixth.
+    //
+    // Inserted in an order that is deliberately NOT alphabetical. An ascending
+    // fixture made this test pass for the wrong reason: the tie-break on
+    // `code` reproduced the expected reversal on its own, so dropping the
+    // createdAt term entirely -- the whole point of migration 0009 -- left the
+    // suite green.
+    const codes = ["hhh8", "aaa1", "ggg7", "ccc3", "fff6", "bbb2", "eee5", "ddd4"];
     for (const code of codes) {
       await createDiscountCode({ ...VALID, code });
     }
@@ -688,6 +699,7 @@ Create `src/app/(admin)/admin/discounts/actions.ts`:
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { requireAdminUser } from "@/lib/auth/session";
+import { zonedDayBoundary } from "@/lib/time";
 import {
   createDiscountCode,
   deactivateDiscountCode,
@@ -706,20 +718,19 @@ type ParsedDate =
   | { kind: "valid"; date: Date };
 
 /**
- * A date input submits "YYYY-MM-DD" with no timezone. Parsed as UTC so the
- * same form produces the same instant wherever the admin happens to be.
+ * A date input submits "YYYY-MM-DD" with no timezone, and the admin typing it
+ * means a day in the shop's timezone. Start and end are anchored to opposite
+ * ends of that local day, so "ends today" stays valid until midnight in
+ * Houston rather than expiring at 6:59pm.
  *
- * Start and end are anchored to opposite ends of that day: a start reads as
- * "no earlier than this day" (UTC midnight), but an end reads as "through
- * the end of this day" (23:59:59.999 UTC). Anchoring endsAt at midnight
- * would make "ends today" already hours in the past for an admin behind
- * UTC -- this shop is run from Houston, UTC-5/6 -- so the code would be dead
- * on arrival while the UI implied it was valid through today.
+ * Anchoring these in UTC is the trap, and it is not obvious: an end at
+ * 23:59:59.999Z is still "later than the start of the day" and still "in the
+ * future" for most of the day, so it passes every loose check while ending
+ * every promotion five hours early. See src/lib/time.ts.
  *
- * `new Date("2099-02-30T...")` does not produce Invalid Date; it silently
- * rolls over to March 2nd. The shape is checked strictly and the
- * constructed date's UTC year/month/day are compared back against what was
- * submitted so a malformed date is refused rather than quietly corrected.
+ * zonedDayBoundary also refuses a date that is not real: `new Date(
+ * "2099-02-30")` does not produce Invalid Date, it rolls forward to March 2,
+ * so a malformed date would otherwise become a different valid one.
  */
 function parseDate(
   value: FormDataEntryValue | null,
@@ -728,22 +739,11 @@ function parseDate(
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw) return { kind: "blank" };
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return { kind: "invalid" };
-
-  const time = boundary === "start" ? "T00:00:00.000Z" : "T23:59:59.999Z";
-  const date = new Date(`${raw}${time}`);
-  if (Number.isNaN(date.getTime())) return { kind: "invalid" };
-
-  const [year, month, day] = raw.split("-").map(Number);
-  if (
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() + 1 !== month ||
-    date.getUTCDate() !== day
-  ) {
+  try {
+    return { kind: "valid", date: zonedDayBoundary(raw, boundary) };
+  } catch {
     return { kind: "invalid" };
   }
-
-  return { kind: "valid", date };
 }
 
 type ParsedCount =
@@ -1043,6 +1043,7 @@ import type { DiscountCode } from "@/lib/db/schema";
 import { discountStatus } from "@/lib/discounts";
 import { listDiscountCodes } from "@/lib/discounts/admin";
 import { formatCents } from "@/lib/money";
+import { zonedDateString } from "@/lib/time";
 import { CreateDiscountForm, DeactivateButton } from "./DiscountForms";
 import styles from "./discounts.module.css";
 
@@ -1060,8 +1061,11 @@ function terms(code: DiscountCode) {
 }
 
 function dateRange(code: DiscountCode) {
-  const from = code.startsAt?.toISOString().slice(0, 10) ?? "now";
-  const to = code.endsAt?.toISOString().slice(0, 10) ?? "no end";
+  // Rendered in the shop's timezone, not UTC. A day now ends at 04:59Z the
+  // FOLLOWING day, so slicing toISOString() would print the day after the one
+  // the admin picked -- the list would disagree with the form that made it.
+  const from = code.startsAt ? zonedDateString(code.startsAt) : "now";
+  const to = code.endsAt ? zonedDateString(code.endsAt) : "no end";
   return `${from} → ${to}`;
 }
 

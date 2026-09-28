@@ -1499,6 +1499,73 @@ describe("discountStatus", () => {
     expect(discountStatus({ ...base, minSubtotalCents: 50_000 }, now)).toBe("live");
   });
 });
+
+describe("discountStatus agrees with validateDiscount", () => {
+  /**
+   * The derivation exists so the admin list cannot say one thing while the
+   * cart says another. That agreement was guarded only by a doc comment
+   * reading "if you change one, change the other": reordering discountStatus
+   * so `exhausted` is tested before `scheduled` left all 23 tests above
+   * green. This makes the claim checkable.
+   */
+  const PAST = new Date("2026-01-01T00:00:00Z");
+  const FUTURE = new Date("2026-12-01T00:00:00Z");
+
+  const EXPECTED: Record<string, string> = {
+    inactive: "off",
+    not_started: "scheduled",
+    expired: "expired",
+    exhausted: "exhausted",
+    // below_minimum describes a cart, not a code, so it has no counterpart:
+    // the code itself is still usable, by a bigger basket.
+    below_minimum: "live",
+  };
+
+  const CASES: Array<[string, Partial<DiscountCode>]> = [
+    ["nothing wrong", {}],
+    ["deactivated", { active: false }],
+    ["not started", { startsAt: FUTURE }],
+    ["expired", { endsAt: PAST }],
+    ["exhausted", { maxRedemptions: 2, timesRedeemed: 2 }],
+    ["below the minimum", { minSubtotalCents: 50_000 }],
+    // Overlaps are the cases that matter: when two conditions hold at once,
+    // only the CHECK ORDER decides which one is reported, so this is where
+    // the two functions drift apart.
+    ["deactivated and expired", { active: false, endsAt: PAST }],
+    [
+      "not started and exhausted",
+      { startsAt: FUTURE, maxRedemptions: 1, timesRedeemed: 1 },
+    ],
+    [
+      "expired and exhausted",
+      { endsAt: PAST, maxRedemptions: 1, timesRedeemed: 1 },
+    ],
+    [
+      "every condition at once",
+      {
+        active: false,
+        startsAt: FUTURE,
+        endsAt: PAST,
+        maxRedemptions: 1,
+        timesRedeemed: 1,
+        minSubtotalCents: 50_000,
+      },
+    ],
+  ];
+
+  it.each(CASES)("reports the same verdict for a code that is %s", (_label, overrides) => {
+    const subject = code(overrides);
+
+    const result = validateDiscount(subject, 1_000, NOW);
+    const status = discountStatus(subject, NOW);
+
+    if (result.ok) {
+      expect(status).toBe("live");
+    } else {
+      expect(status).toBe(EXPECTED[result.reason]);
+    }
+  });
+});
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
