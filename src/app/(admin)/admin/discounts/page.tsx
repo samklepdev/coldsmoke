@@ -1,14 +1,13 @@
-import { desc } from "drizzle-orm";
-import { db } from "@/lib/db/client";
-import { discountCodes } from "@/lib/db/schema";
+import type { DiscountCode } from "@/lib/db/schema";
 import { discountStatus } from "@/lib/discounts";
+import { listDiscountCodes } from "@/lib/discounts/admin";
 import { formatCents } from "@/lib/money";
 import { CreateDiscountForm, DeactivateButton } from "./DiscountForms";
 import styles from "./discounts.module.css";
 
 export const metadata = { title: "Discounts" };
 
-function terms(code: typeof discountCodes.$inferSelect) {
+function terms(code: DiscountCode) {
   const off =
     code.type === "percent"
       ? `${code.value}% off`
@@ -19,18 +18,14 @@ function terms(code: typeof discountCodes.$inferSelect) {
     : off;
 }
 
-function dateRange(code: typeof discountCodes.$inferSelect) {
+function dateRange(code: DiscountCode) {
   const from = code.startsAt?.toISOString().slice(0, 10) ?? "now";
   const to = code.endsAt?.toISOString().slice(0, 10) ?? "no end";
   return `${from} → ${to}`;
 }
 
 export default async function AdminDiscountsPage() {
-  // Newest first: the code you just made is the one you are looking for.
-  const codes = await db
-    .select()
-    .from(discountCodes)
-    .orderBy(desc(discountCodes.id));
+  const codes = await listDiscountCodes();
 
   return (
     <section>

@@ -26,8 +26,12 @@ beforeEach(async () => {
   await ctx.truncate();
 });
 
-const { createDiscountCode, deactivateDiscountCode, DiscountInputError } =
-  await import("./admin");
+const {
+  createDiscountCode,
+  deactivateDiscountCode,
+  listDiscountCodes,
+  DiscountInputError,
+} = await import("./admin");
 
 const VALID = {
   code: "spring15",
@@ -138,5 +142,41 @@ describe("deactivateDiscountCode", () => {
     expect(after.minSubtotalCents).toBe(2500);
     expect(after.value).toBe(created.value);
     expect(after.endsAt).toEqual(created.endsAt);
+  });
+});
+
+describe("listDiscountCodes", () => {
+  it("returns codes newest first", async () => {
+    // The admin list used to order by `id`, which is a random v4 uuid: with
+    // eight codes the one just created rendered sixth. Eight, not two --
+    // a random order agrees with the right one too often at small n.
+    const codes = ["aaa1", "bbb2", "ccc3", "ddd4", "eee5", "fff6", "ggg7", "hhh8"];
+    for (const code of codes) {
+      await createDiscountCode({ ...VALID, code });
+    }
+
+    const listed = await listDiscountCodes();
+
+    expect(listed.map((c) => c.code)).toEqual([...codes].reverse());
+  });
+
+  it("orders rows sharing a timestamp deterministically", async () => {
+    // Every row that predates the created_at column carries the migration's
+    // timestamp, so ties are the normal case on an existing database, not an
+    // edge case. Without a tiebreak their order is whatever Postgres returns.
+    const now = new Date("2026-01-01T00:00:00Z");
+    for (const code of ["tie-a", "tie-b", "tie-c"]) {
+      await createDiscountCode({ ...VALID, code });
+      await ctx.db
+        .update(discountCodes)
+        .set({ createdAt: now })
+        .where(eq(discountCodes.code, code));
+    }
+
+    const first = await listDiscountCodes();
+    const second = await listDiscountCodes();
+
+    expect(first.map((c) => c.code)).toEqual(["tie-c", "tie-b", "tie-a"]);
+    expect(second.map((c) => c.code)).toEqual(first.map((c) => c.code));
   });
 });

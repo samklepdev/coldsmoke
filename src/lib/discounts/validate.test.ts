@@ -147,6 +147,9 @@ describe("discountStatus", () => {
     startsAt: null as Date | null,
     endsAt: null as Date | null,
     active: true,
+    // Present only to satisfy DiscountCode. discountStatus must never read
+    // it: when a code was made says nothing about whether it is usable now.
+    createdAt: new Date("2026-01-01T00:00:00Z"),
   };
 
   const now = new Date("2026-06-15T12:00:00Z");

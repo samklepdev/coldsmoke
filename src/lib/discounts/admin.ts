@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { discountCodes, type DiscountCode } from "@/lib/db/schema";
 
@@ -106,6 +106,25 @@ export async function createDiscountCode(
     }
     throw error;
   }
+}
+
+/**
+ * Every code, newest first -- the one you just made is the one you are
+ * looking for.
+ *
+ * Ordered by createdAt, never by id: `id` is a random v4 uuid, so `desc(id)`
+ * is arbitrary rather than chronological. It reads as newest-first and is not,
+ * which is exactly how it survived a browser check.
+ *
+ * Tie-broken by code because every row predating the created_at column shares
+ * the migration's timestamp, making ties the normal case on an existing
+ * database; without it their order is whatever Postgres happens to return.
+ */
+export async function listDiscountCodes(): Promise<DiscountCode[]> {
+  return db
+    .select()
+    .from(discountCodes)
+    .orderBy(desc(discountCodes.createdAt), desc(discountCodes.code));
 }
 
 /**
