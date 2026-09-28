@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **No migration.** `discount_codes` already has every column: `code`, `type`, `value`, `min_subtotal_cents`, `max_redemptions`, `times_redeemed`, `starts_at`, `ends_at`, `active`, a unique index on `code`, and `CHECK (code = lower(code))`.
+- ~~**No migration.**~~ **One additive migration, added by the final review.** `discount_codes` already had `code`, `type`, `value`, `min_subtotal_cents`, `max_redemptions`, `times_redeemed`, `starts_at`, `ends_at`, `active`, a unique index on `code`, and `CHECK (code = lower(code))` — but no `created_at`, and the spec requires the list be sorted newest first. `id` is a random v4 uuid, so `desc(id)` is arbitrary rather than chronological: with eight codes the newest rendered sixth. Migration `0009` adds `created_at timestamptz NOT NULL DEFAULT now()`. Additive, no backfill; rows predating it share the migration's timestamp, which is why `listDiscountCodes` tie-breaks on `code`.
 - **Create and deactivate only. No editing, no deletion.** A code is a promise made to customers, and `orders.discount_code_id` references it forever.
 - **Status is derived, never stored,** and shares the checks — same conditions, same order — with `validateDiscount`, so the admin list cannot disagree with what a customer experiences at the cart.
 - **`below_minimum` is never a status.** It describes a cart, not a code.
@@ -220,8 +220,12 @@ beforeEach(async () => {
   await ctx.truncate();
 });
 
-const { createDiscountCode, deactivateDiscountCode, DiscountInputError } =
-  await import("./admin");
+const {
+  createDiscountCode,
+  deactivateDiscountCode,
+  listDiscountCodes,
+  DiscountInputError,
+} = await import("./admin");
 
 const VALID = {
   code: "spring15",
@@ -334,6 +338,42 @@ describe("deactivateDiscountCode", () => {
     expect(after.endsAt).toEqual(created.endsAt);
   });
 });
+
+describe("listDiscountCodes", () => {
+  it("returns codes newest first", async () => {
+    // The admin list used to order by `id`, which is a random v4 uuid: with
+    // eight codes the one just created rendered sixth. Eight, not two --
+    // a random order agrees with the right one too often at small n.
+    const codes = ["aaa1", "bbb2", "ccc3", "ddd4", "eee5", "fff6", "ggg7", "hhh8"];
+    for (const code of codes) {
+      await createDiscountCode({ ...VALID, code });
+    }
+
+    const listed = await listDiscountCodes();
+
+    expect(listed.map((c) => c.code)).toEqual([...codes].reverse());
+  });
+
+  it("orders rows sharing a timestamp deterministically", async () => {
+    // Every row that predates the created_at column carries the migration's
+    // timestamp, so ties are the normal case on an existing database, not an
+    // edge case. Without a tiebreak their order is whatever Postgres returns.
+    const now = new Date("2026-01-01T00:00:00Z");
+    for (const code of ["tie-a", "tie-b", "tie-c"]) {
+      await createDiscountCode({ ...VALID, code });
+      await ctx.db
+        .update(discountCodes)
+        .set({ createdAt: now })
+        .where(eq(discountCodes.code, code));
+    }
+
+    const first = await listDiscountCodes();
+    const second = await listDiscountCodes();
+
+    expect(first.map((c) => c.code)).toEqual(["tie-c", "tie-b", "tie-a"]);
+    expect(second.map((c) => c.code)).toEqual(first.map((c) => c.code));
+  });
+});
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -346,7 +386,7 @@ Expected: FAIL — cannot resolve `./admin`.
 Create `src/lib/discounts/admin.ts`:
 
 ```ts
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { discountCodes, type DiscountCode } from "@/lib/db/schema";
 
@@ -454,6 +494,25 @@ export async function createDiscountCode(
     }
     throw error;
   }
+}
+
+/**
+ * Every code, newest first -- the one you just made is the one you are
+ * looking for.
+ *
+ * Ordered by createdAt, never by id: `id` is a random v4 uuid, so `desc(id)`
+ * is arbitrary rather than chronological. It reads as newest-first and is not,
+ * which is exactly how it survived a browser check.
+ *
+ * Tie-broken by code because every row predating the created_at column shares
+ * the migration's timestamp, making ties the normal case on an existing
+ * database; without it their order is whatever Postgres happens to return.
+ */
+export async function listDiscountCodes(): Promise<DiscountCode[]> {
+  return db
+    .select()
+    .from(discountCodes)
+    .orderBy(desc(discountCodes.createdAt), desc(discountCodes.code));
 }
 
 /**
@@ -687,12 +746,29 @@ function parseDate(
   return { kind: "valid", date };
 }
 
-function parseOptionalInt(value: FormDataEntryValue | null): number | null {
+type ParsedCount =
+  | { kind: "blank" }
+  | { kind: "invalid" }
+  | { kind: "valid"; count: number };
+
+/**
+ * Blank legitimately means "no cap". Unparseable input must NOT collapse into
+ * that same meaning -- returning null for "2.5" or "abc" turns a typo into an
+ * uncapped promotion, the unbounded liability the required end date exists to
+ * prevent. Refused rather than defaulted, like `type`, and for the same
+ * reason: a Server Action is reachable by POST without the form rendering.
+ *
+ * Out-of-range whole numbers (0, -5) are deliberately passed through: they
+ * parse fine and createDiscountCode refuses them with a specific message.
+ */
+function parseCount(value: FormDataEntryValue | null): ParsedCount {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw) return null;
+  if (!raw) return { kind: "blank" };
 
   const parsed = Number(raw);
-  return Number.isInteger(parsed) ? parsed : null;
+  if (!Number.isInteger(parsed)) return { kind: "invalid" };
+
+  return { kind: "valid", count: parsed };
 }
 
 export async function createDiscountAction(
@@ -750,13 +826,22 @@ export async function createDiscountAction(
   // fall through to that same meaning -- it is refused above.
   const startsAt = startsAtParsed.kind === "valid" ? startsAtParsed.date : null;
 
+  const capParsed = parseCount(formData.get("maxRedemptions"));
+  if (capParsed.kind === "invalid") {
+    return {
+      status: "error",
+      error: "Enter a whole number of redemptions, or leave it blank.",
+    };
+  }
+  const maxRedemptions = capParsed.kind === "valid" ? capParsed.count : null;
+
   try {
     const created = await createDiscountCode({
       code: String(formData.get("code") ?? ""),
       type,
       value,
       minSubtotalCents: Math.round(minSubtotalDollars * 100),
-      maxRedemptions: parseOptionalInt(formData.get("maxRedemptions")),
+      maxRedemptions,
       startsAt,
       endsAt,
     });
@@ -954,17 +1039,16 @@ export function DeactivateButton({ id, code }: { id: string; code: string }) {
 Create `src/app/(admin)/admin/discounts/page.tsx`:
 
 ```tsx
-import { desc } from "drizzle-orm";
-import { db } from "@/lib/db/client";
-import { discountCodes } from "@/lib/db/schema";
+import type { DiscountCode } from "@/lib/db/schema";
 import { discountStatus } from "@/lib/discounts";
+import { listDiscountCodes } from "@/lib/discounts/admin";
 import { formatCents } from "@/lib/money";
 import { CreateDiscountForm, DeactivateButton } from "./DiscountForms";
 import styles from "./discounts.module.css";
 
 export const metadata = { title: "Discounts" };
 
-function terms(code: typeof discountCodes.$inferSelect) {
+function terms(code: DiscountCode) {
   const off =
     code.type === "percent"
       ? `${code.value}% off`
@@ -975,18 +1059,14 @@ function terms(code: typeof discountCodes.$inferSelect) {
     : off;
 }
 
-function dateRange(code: typeof discountCodes.$inferSelect) {
+function dateRange(code: DiscountCode) {
   const from = code.startsAt?.toISOString().slice(0, 10) ?? "now";
   const to = code.endsAt?.toISOString().slice(0, 10) ?? "no end";
   return `${from} → ${to}`;
 }
 
 export default async function AdminDiscountsPage() {
-  // Newest first: the code you just made is the one you are looking for.
-  const codes = await db
-    .select()
-    .from(discountCodes)
-    .orderBy(desc(discountCodes.id));
+  const codes = await listDiscountCodes();
 
   return (
     <section>

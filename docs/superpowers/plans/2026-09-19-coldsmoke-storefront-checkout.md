@@ -553,6 +553,13 @@ export const discountCodes = pgTable(
     startsAt: timestamp("starts_at", { withTimezone: true }),
     endsAt: timestamp("ends_at", { withTimezone: true }),
     active: boolean("active").notNull().default(true),
+    // The admin list is sorted newest first. `id` is a random v4 uuid, so
+    // ordering by it is arbitrary, not chronological -- the just-created code
+    // landed in the middle of the list. Added rather than inferred because
+    // nothing else on this table records when a code was made.
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("discount_codes_code_idx").on(t.code),
@@ -1444,6 +1451,9 @@ describe("discountStatus", () => {
     startsAt: null as Date | null,
     endsAt: null as Date | null,
     active: true,
+    // Present only to satisfy DiscountCode. discountStatus must never read
+    // it: when a code was made says nothing about whether it is usable now.
+    createdAt: new Date("2026-01-01T00:00:00Z"),
   };
 
   const now = new Date("2026-06-15T12:00:00Z");
