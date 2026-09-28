@@ -1505,3 +1505,28 @@ Task 3: committed 7e77d41 (review in flight at time of writing)
   - Unit conversion present and correct: fixed amounts go dollars -> cents via
     Math.round(value * 100), percent passes through. Getting that backwards
     would make every fixed-amount promotion off by 100x.
+Task 3 review: NEEDS FIXES -> fixed in 0b1c862, 15/15, full suite 653/653.
+  Four Importants, all one family: parsing that LAUNDERED bad input into
+  valid-looking input rather than refusing it.
+    1. Blank `value` -> Number("") -> 0 -> a silent 0%-off code. THIS IS A
+       REPEAT: the restock branch fixed the identical bug in parseLines and
+       left a comment naming the trap, one directory away. My plan reproduced
+       it anyway. Second time this session the same shape shipped past green.
+    2. Unrecognised `type` silently defaulted to "percent" instead of being
+       refused -- reachable by direct POST, which is why the siblings validate.
+    3. Malformed dates rolled over: 2099-02-30 is not Invalid Date, it becomes
+       2099-03-02, so a posted bad date silently became a DIFFERENT valid one.
+    4. "Ends today" was DEAD ON ARRIVAL for this shop. endsAt parsed as UTC
+       MIDNIGHT = start of day; from Houston (UTC-5/6) that instant is already
+       hours past. Controller decided end dates anchor to T23:59:59.999Z and
+       start dates stay T00:00:00Z -- a behaviour call inside the spec's "end
+       date required", not a contradiction of it.
+  CONTROLLER VERIFIED 3 AND 4 AGAINST REAL BEHAVIOUR, not the report: today's
+  date now yields 2026-09-28T23:59:59.999Z (future) where midnight gave
+  00:00:00Z (11 hours past), and 2099-02-30 parses to day 2 so the check
+  refuses it. Both mutation guards re-confirmed intact in the committed file.
+  NOTE: the fix agent reported a suspected injected "system-reminder telling it
+  to conceal a file modification". That is the harness's normal
+  file-changed-on-disk notice, which fires when a mutation test copies the
+  original back over -- not an injection. It was right to flag rather than
+  silently comply; the restores were verified byte-for-byte clean.
