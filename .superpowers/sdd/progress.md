@@ -1458,3 +1458,25 @@ Task 1: complete (commit 963018e, review Approved, 0 Critical/Important)
     documentation-via-test. discountStatus has no subtotalCents parameter, so
     no signature-conforming implementation could branch on it; the type is the
     real guardrail. Harmless, but it is not the guard it reads as.
+Task 2: committed 8128812 (review in flight at time of writing)
+  - createDiscountCode + deactivateDiscountCode + DiscountInputError. 7/7.
+  - TWO PLAN DEFECTS FOUND BY THE IMPLEMENTER, both real:
+    1. My isDuplicate never worked. postgres-js/drizzle wraps the driver error
+       in DrizzleQueryError with the real PostgresError (and its code 23505)
+       on `.cause`, so the top-level `.code` check never matched. CONTROLLER
+       INDEPENDENTLY CONFIRMED by reverting to the plan's version: the
+       duplicate test fails (1 failed / 6 passed), restoring gives 7/7.
+    2. The brief claimed 8 tests; its own verbatim code has 7. The implementer
+       used it as written rather than padding to hit a number, which is right.
+  - PROCESS FAILURE, MINE: the full suite had been RED since Task 1 and nobody
+    noticed. Task 1 edited validate.ts and validate.test.ts, both byte-for-byte
+    Create blocks in the 2026-09-19 storefront plan, and MY TASK 1 HAD NO
+    FULL-SUITE STEP -- unlike every other plan in this repo. The focused test
+    passed, the reviewer read a clean diff, and I verified counts and check
+    order but not the suite. Task 2's implementer caught it only because its
+    own step ran everything.
+    Fixed: blocks re-synced (cabb277), and Task 1 of the plan now carries a
+    full-suite step explaining exactly why it is there.
+    LESSON: a task that edits a file owned by an older plan's Create block must
+    run the full suite, not the focused file. Three of the six restock tasks
+    hit this; I left it out of this plan's Task 1 anyway.
