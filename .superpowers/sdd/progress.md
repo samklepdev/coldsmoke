@@ -1411,3 +1411,17 @@ payment_intent.succeeded forwarded).
 
 ## Progress
 (nothing executed yet)
+
+## Standing instruction (2026-09-28)
+- "keep going through the rest of the tasks" -- run Tasks 1-5 continuously, no
+  check-ins between tasks. Stop only for a BLOCKED status that cannot be
+  resolved, or a finding that contradicts the plan (the human's call).
+- No push notification requested for THIS run (the restock run had one; do not
+  assume it carries over).
+- Do NOT dispatch implementers in parallel; they collide in the same files.
+- Verify each task by ARTIFACTS (commit + report file), not by trusting a
+  completion notification -- two agents died silently on 2026-09-25.
+- Task 4 Step 6 (browser check) is the CONTROLLER's: a subagent cannot
+  establish an admin session. The working method is a throwaway Playwright
+  spec following admin.spec.ts -- sign up, force emailVerified + role=admin in
+  the DB, sign in. That is how the restock panel's missing CSS was caught.
