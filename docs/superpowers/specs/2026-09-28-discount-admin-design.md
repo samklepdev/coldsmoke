@@ -64,10 +64,15 @@ it right.)
 
 ## 4. Data model
 
-**No migration.** `discount_codes` already has `code`, `type`
-(`percent`/`fixed`), `value`, `min_subtotal_cents`, `max_redemptions`,
-`times_redeemed`, `starts_at`, `ends_at` and `active`, plus a unique index on
-`code` and a `CHECK (code = lower(code))`.
+~~**No migration.**~~ **One additive migration** (`0009`), added during the
+final review. `discount_codes` already has `code`, `type` (`percent`/`fixed`),
+`value`, `min_subtotal_cents`, `max_redemptions`, `times_redeemed`,
+`starts_at`, `ends_at` and `active`, plus a unique index on `code` and a
+`CHECK (code = lower(code))` — but no `created_at`, and §6 requires the list be
+sorted newest first. `id` is a random v4 uuid, so ordering by it is arbitrary
+rather than chronological. `0009` adds `created_at timestamptz NOT NULL DEFAULT
+now()`: additive, no table rewrite, no backfill. Rows predating it share one
+timestamp, so the ordering tie-breaks on `code`.
 
 ## 5. Interface
 

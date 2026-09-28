@@ -27,6 +27,7 @@ export default async function AdminLayout({
         </Link>
         <nav className={styles.nav} aria-label="Admin">
           <Link href="/admin/orders">Orders</Link>
+          <Link href="/admin/discounts">Discounts</Link>
         </nav>
         <span className={styles.who}>{user.email}</span>
       </header>

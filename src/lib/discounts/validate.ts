@@ -66,3 +66,34 @@ export function discountFailureMessage(
         : "Your order is below the minimum for that code.";
   }
 }
+
+export type DiscountStatus =
+  | "live"
+  | "scheduled"
+  | "expired"
+  | "exhausted"
+  | "off";
+
+/**
+ * Whether a code is usable right now, for the admin list.
+ *
+ * Deliberately mirrors validateDiscount's checks in the same order, so the
+ * list cannot tell an admin a code is live while the cart tells a customer it
+ * is not. If you change one, change the other.
+ *
+ * `below_minimum` has no counterpart here on purpose: it describes a
+ * particular cart, not the code. A code requiring $50 is not broken, it is
+ * waiting for a big enough basket.
+ */
+export function discountStatus(
+  code: DiscountCode,
+  now: Date = new Date(),
+): DiscountStatus {
+  if (!code.active) return "off";
+  if (code.startsAt && code.startsAt > now) return "scheduled";
+  if (code.endsAt && code.endsAt < now) return "expired";
+  if (code.maxRedemptions !== null && code.timesRedeemed >= code.maxRedemptions) {
+    return "exhausted";
+  }
+  return "live";
+}

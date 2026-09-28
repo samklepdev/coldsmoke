@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateDiscount, discountFailureMessage } from "./validate";
+import { validateDiscount, discountFailureMessage, discountStatus } from "./validate";
 import type { DiscountCode } from "@/lib/db/schema";
 
 const NOW = new Date("2026-06-15T12:00:00Z");
@@ -132,5 +132,133 @@ describe("discountFailureMessage", () => {
     expect(discountFailureMessage("below_minimum")).toBe(
       "Your order is below the minimum for that code.",
     );
+  });
+});
+
+describe("discountStatus", () => {
+  const base = {
+    id: "00000000-0000-0000-0000-000000000001",
+    code: "spring",
+    type: "percent" as const,
+    value: 15,
+    minSubtotalCents: 0,
+    maxRedemptions: null as number | null,
+    timesRedeemed: 0,
+    startsAt: null as Date | null,
+    endsAt: null as Date | null,
+    active: true,
+    // Present only to satisfy DiscountCode. discountStatus must never read
+    // it: when a code was made says nothing about whether it is usable now.
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+  };
+
+  const now = new Date("2026-06-15T12:00:00Z");
+
+  it("is live when nothing stands in the way", () => {
+    expect(discountStatus(base, now)).toBe("live");
+  });
+
+  it("is off when deactivated", () => {
+    expect(discountStatus({ ...base, active: false }, now)).toBe("off");
+  });
+
+  it("is scheduled before its start date", () => {
+    expect(
+      discountStatus({ ...base, startsAt: new Date("2026-07-01T00:00:00Z") }, now),
+    ).toBe("scheduled");
+  });
+
+  it("is expired after its end date", () => {
+    expect(
+      discountStatus({ ...base, endsAt: new Date("2026-06-01T00:00:00Z") }, now),
+    ).toBe("expired");
+  });
+
+  it("is exhausted once the cap is reached", () => {
+    expect(
+      discountStatus({ ...base, maxRedemptions: 5, timesRedeemed: 5 }, now),
+    ).toBe("exhausted");
+  });
+
+  it("reports expired rather than live for a code still flagged active", () => {
+    // The whole reason this derivation exists: `active` is not the same
+    // question as "can a customer use this right now".
+    const code = { ...base, active: true, endsAt: new Date("2026-01-01T00:00:00Z") };
+
+    expect(code.active).toBe(true);
+    expect(discountStatus(code, now)).toBe("expired");
+  });
+
+  it("ignores the minimum subtotal, which is a property of a cart", () => {
+    // validateDiscount can fail with below_minimum; that says nothing about
+    // whether the code itself is usable, so it must not appear here.
+    expect(discountStatus({ ...base, minSubtotalCents: 50_000 }, now)).toBe("live");
+  });
+});
+
+describe("discountStatus agrees with validateDiscount", () => {
+  /**
+   * The derivation exists so the admin list cannot say one thing while the
+   * cart says another. That agreement was guarded only by a doc comment
+   * reading "if you change one, change the other": reordering discountStatus
+   * so `exhausted` is tested before `scheduled` left all 23 tests above
+   * green. This makes the claim checkable.
+   */
+  const PAST = new Date("2026-01-01T00:00:00Z");
+  const FUTURE = new Date("2026-12-01T00:00:00Z");
+
+  const EXPECTED: Record<string, string> = {
+    inactive: "off",
+    not_started: "scheduled",
+    expired: "expired",
+    exhausted: "exhausted",
+    // below_minimum describes a cart, not a code, so it has no counterpart:
+    // the code itself is still usable, by a bigger basket.
+    below_minimum: "live",
+  };
+
+  const CASES: Array<[string, Partial<DiscountCode>]> = [
+    ["nothing wrong", {}],
+    ["deactivated", { active: false }],
+    ["not started", { startsAt: FUTURE }],
+    ["expired", { endsAt: PAST }],
+    ["exhausted", { maxRedemptions: 2, timesRedeemed: 2 }],
+    ["below the minimum", { minSubtotalCents: 50_000 }],
+    // Overlaps are the cases that matter: when two conditions hold at once,
+    // only the CHECK ORDER decides which one is reported, so this is where
+    // the two functions drift apart.
+    ["deactivated and expired", { active: false, endsAt: PAST }],
+    [
+      "not started and exhausted",
+      { startsAt: FUTURE, maxRedemptions: 1, timesRedeemed: 1 },
+    ],
+    [
+      "expired and exhausted",
+      { endsAt: PAST, maxRedemptions: 1, timesRedeemed: 1 },
+    ],
+    [
+      "every condition at once",
+      {
+        active: false,
+        startsAt: FUTURE,
+        endsAt: PAST,
+        maxRedemptions: 1,
+        timesRedeemed: 1,
+        minSubtotalCents: 50_000,
+      },
+    ],
+  ];
+
+  it.each(CASES)("reports the same verdict for a code that is %s", (_label, overrides) => {
+    const subject = code(overrides);
+
+    const result = validateDiscount(subject, 1_000, NOW);
+    const status = discountStatus(subject, NOW);
+
+    if (result.ok) {
+      expect(status).toBe("live");
+    } else {
+      expect(status).toBe(EXPECTED[result.reason]);
+    }
   });
 });

@@ -27,6 +27,13 @@ export const BUSINESS = {
   returnCondition: "unopened",
   governingState: "Texas",
   supportResponseHours: 48,
+
+  /**
+   * Where the shop is run from, and therefore what "today" means when an
+   * admin types a date. Not display-only: discount windows are stored as the
+   * instants this zone's calendar days begin and end at.
+   */
+  timeZone: "America/Chicago",
 } as const;
 
 const MARKER = /^\[.+\]$/;

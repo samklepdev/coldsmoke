@@ -1389,3 +1389,339 @@ status filter cannot find them).
 FINAL VERIFICATION (controller-run): 624 tests / 50 files; tsc clean; lint
 clean; e2e 19 passed with the payment test genuinely RUN (1 real
 payment_intent.succeeded forwarded).
+
+# ============================================================
+# PLAN: Discount Code Admin (2026-09-28)
+# Plan: docs/superpowers/plans/2026-09-28-discount-admin.md
+# Spec: docs/superpowers/specs/2026-09-28-discount-admin-design.md
+# Branch: feat/discount-codes
+# Base commit: 5faf63d
+# ============================================================
+
+## Pre-flight review (controller, before Task 1)
+- validate.test.ts EXISTS with 16 tests in two describes. Task 1 had a
+  create-if-missing branch; resolved to append-only, with the before/after
+  counts stated (16 -> 23) so an overwrite is detectable.
+- Renamed a helper in the plan's page.tsx from `window` to `dateRange`. It
+  shadowed the global.
+- Verified src/lib/discounts/index.ts still has `export * from "./validate"`,
+  which is what lets the page import discountStatus from "@/lib/discounts".
+- Stale task-*-report.md from the restock run deleted; a reviewer read one of
+  those earlier in this project and produced a bogus finding.
+
+## Progress
+(nothing executed yet)
+
+## Standing instruction (2026-09-28)
+- "keep going through the rest of the tasks" -- run Tasks 1-5 continuously, no
+  check-ins between tasks. Stop only for a BLOCKED status that cannot be
+  resolved, or a finding that contradicts the plan (the human's call).
+- "ping me when it's all done" (asked mid-run, 2026-09-28): send a PUSH
+  NOTIFICATION at the END of the whole run, not per task. Send it whether the
+  run ends green or stuck -- if something blocks partway they still want to
+  know at that moment rather than discovering silence later.
+- Do NOT dispatch implementers in parallel; they collide in the same files.
+- Verify each task by ARTIFACTS (commit + report file), not by trusting a
+  completion notification -- two agents died silently on 2026-09-25.
+- Task 4 Step 6 (browser check) is the CONTROLLER's: a subagent cannot
+  establish an admin session. The working method is a throwaway Playwright
+  spec following admin.spec.ts -- sign up, force emailVerified + role=admin in
+  the DB, sign in. That is how the restock panel's missing CSS was caught.
+Task 1: complete (commit 963018e, review Approved, 0 Critical/Important)
+  - discountStatus + DiscountStatus in validate.ts. 16 -> 23 tests.
+  - Controller verified INDEPENDENTLY, not from the report: test count is 23,
+    and diffing test NAMES before/after shows zero pre-existing tests lost
+    (the failure mode the brief warned about for an append).
+  - Controller also checked the thing the function exists for: the check order
+    in discountStatus (active -> startsAt -> endsAt -> maxRedemptions) matches
+    validateDiscount's exactly, and minSubtotal is correctly absent.
+- "open a PR when it's done" (2026-09-28): PR AUTHORISED for
+  feat/discount-codes, but only AFTER all five tasks are complete, the final
+  whole-branch review has returned, and its Critical/Important findings are
+  resolved. Dispatch ONE fix subagent with the complete findings list if there
+  are any -- not one fixer per finding.
+  Order: Tasks 1-5 -> final whole-branch review (most capable model) -> fixes
+  -> full verification -> PR -> push notification.
+  Before opening it, CHECK WHAT WOULD ACTUALLY MERGE: `git log origin/main..HEAD`.
+  On the reconciliation branch this caught 13 unrelated commits that would have
+  landed under a misleading PR title, because local main was ahead of
+  origin/main and had never been pushed.
+  - Reviewer verified the two cross-function agreements that matter, rather
+    than assuming them: `endsAt === now` is treated identically by
+    discountStatus and validateDiscount (both use `endsAt < now`, so neither
+    calls it expired), and the cap threshold agrees across all THREE sites --
+    discountStatus, validateDiscount, and redeemDiscount's SQL guard
+    (`timesRedeemed < maxRedemptions`), which is the thing that actually
+    refuses an increment. No daylight between "list says live" and "cart
+    accepts it".
+  - MINOR for the final review: the "ignores the minimum subtotal" test is
+    documentation-via-test. discountStatus has no subtotalCents parameter, so
+    no signature-conforming implementation could branch on it; the type is the
+    real guardrail. Harmless, but it is not the guard it reads as.
+Task 2: complete (commit 8128812, review Approved, 0 Critical/Important)
+  - createDiscountCode + deactivateDiscountCode + DiscountInputError. 7/7.
+  - TWO PLAN DEFECTS FOUND BY THE IMPLEMENTER, both real:
+    1. My isDuplicate never worked. postgres-js/drizzle wraps the driver error
+       in DrizzleQueryError with the real PostgresError (and its code 23505)
+       on `.cause`, so the top-level `.code` check never matched. CONTROLLER
+       INDEPENDENTLY CONFIRMED by reverting to the plan's version: the
+       duplicate test fails (1 failed / 6 passed), restoring gives 7/7.
+    2. The brief claimed 8 tests; its own verbatim code has 7. The implementer
+       used it as written rather than padding to hit a number, which is right.
+  - PROCESS FAILURE, MINE: the full suite had been RED since Task 1 and nobody
+    noticed. Task 1 edited validate.ts and validate.test.ts, both byte-for-byte
+    Create blocks in the 2026-09-19 storefront plan, and MY TASK 1 HAD NO
+    FULL-SUITE STEP -- unlike every other plan in this repo. The focused test
+    passed, the reviewer read a clean diff, and I verified counts and check
+    order but not the suite. Task 2's implementer caught it only because its
+    own step ran everything.
+    Fixed: blocks re-synced (cabb277), and Task 1 of the plan now carries a
+    full-suite step explaining exactly why it is there.
+    LESSON: a task that edits a file owned by an older plan's Create block must
+    run the full suite, not the focused file. Three of the six restock tasks
+    hit this; I left it out of this plan's Task 1 anyway.
+  - Reviewer verified two things beyond the brief: discount_codes_code_idx is
+    the table's ONLY unique constraint besides the PK, so mapping any 23505 to
+    "that code already exists" cannot misfire on an unrelated violation; and
+    the two testDb() connections (mock factory + beforeAll) point at the same
+    database, so truncate() really clears what the mocked client sees.
+  - MINORS for the final review:
+    1. No test exercises the charset branch (^[a-z0-9-]+$) -- inherited from MY
+       brief's test list, not dropped by the implementer. That validation is
+       currently unverified.
+    2. isDuplicate's doc comment does not mention it checks both the top-level
+       and .cause-wrapped forms; only the inline comment does.
+Task 3: committed 7e77d41 (review in flight at time of writing)
+  - createDiscountAction + deactivateDiscountAction + DiscountAdminState.
+    7/7 focused, FULL SUITE 645 tests / 52 files, tsc + lint clean.
+  - Implementer ran the admin-gate mutation: deleting requireAdminUser() from
+    createDiscountAction fails exactly that gate test (6/7), restoring gives
+    7/7. Used a module-namespace spy for the propagation test and said so.
+  - CONTROLLER RE-RAN A DIFFERENT MUTATION, on the piece most likely to pass
+    for the wrong reason: replacing the `instanceof DiscountInputError` +
+    rethrow with a blanket catch-all fails "rejects rather than reporting a
+    friendly error when something unexpected fails" (1 failed / 6 passed).
+    So the discrimination is pinned, not incidental. File restored, diff empty.
+  - Unit conversion present and correct: fixed amounts go dollars -> cents via
+    Math.round(value * 100), percent passes through. Getting that backwards
+    would make every fixed-amount promotion off by 100x.
+Task 3 review: NEEDS FIXES -> fixed in 0b1c862, 15/15, full suite 653/653.
+  Four Importants, all one family: parsing that LAUNDERED bad input into
+  valid-looking input rather than refusing it.
+    1. Blank `value` -> Number("") -> 0 -> a silent 0%-off code. THIS IS A
+       REPEAT: the restock branch fixed the identical bug in parseLines and
+       left a comment naming the trap, one directory away. My plan reproduced
+       it anyway. Second time this session the same shape shipped past green.
+    2. Unrecognised `type` silently defaulted to "percent" instead of being
+       refused -- reachable by direct POST, which is why the siblings validate.
+    3. Malformed dates rolled over: 2099-02-30 is not Invalid Date, it becomes
+       2099-03-02, so a posted bad date silently became a DIFFERENT valid one.
+    4. "Ends today" was DEAD ON ARRIVAL for this shop. endsAt parsed as UTC
+       MIDNIGHT = start of day; from Houston (UTC-5/6) that instant is already
+       hours past. Controller decided end dates anchor to T23:59:59.999Z and
+       start dates stay T00:00:00Z -- a behaviour call inside the spec's "end
+       date required", not a contradiction of it.
+  CONTROLLER VERIFIED 3 AND 4 AGAINST REAL BEHAVIOUR, not the report: today's
+  date now yields 2026-09-28T23:59:59.999Z (future) where midnight gave
+  00:00:00Z (11 hours past), and 2099-02-30 parses to day 2 so the check
+  refuses it. Both mutation guards re-confirmed intact in the committed file.
+  NOTE: the fix agent reported a suspected injected "system-reminder telling it
+  to conceal a file modification". That is the harness's normal
+  file-changed-on-disk notice, which fires when a mutation test copies the
+  original back over -- not an injection. It was right to flag rather than
+  silently comply; the restores were verified byte-for-byte clean.
+Task 3: complete (commits 36205e4..0b1c862, Approved after 1 fix pass)
+  - Re-review verified the asymmetric anchoring is ORDERING-COHERENT, which is
+    the risk my fix instruction created: same calendar date for start and end
+    gives 00:00:00.000Z < 23:59:59.999Z (a valid same-day window, never equal),
+    and a reversed range still comes out invalid. Also hand-checked leap day
+    2028-02-29 (valid, round-trips) and 2099-12-32 (year mismatch, refused).
+    No legitimate date is rejected.
+  - Reviewer's carried-forward WARNING about deactivateDiscountCode throwing on
+    an unknown id: CONTROLLER ALREADY RESOLVED IT -- it is a plain UPDATE with
+    no throw, so an unknown id matches zero rows and is a safe no-op. The
+    missing try/catch in deactivateDiscountAction is fine.
+  - Tests 7 -> 15. Full suite 653/653.
+Task 4: complete (commits 5f23744..3eecee8, review Approved, 0 Critical/Important)
+  - page.tsx + DiscountForms.tsx + discounts.module.css + nav link.
+    tsc/lint clean, FULL SUITE 653/653.
+  - The full-suite lesson took: this implementer ran everything, caught
+    layout.tsx drifting against 2026-09-20-admin-orders.md immediately, and
+    synced it in a separate docs commit. That is the failure Task 1 shipped.
+  - CONTROLLER DID THE BROWSER CHECK (throwaway Playwright spec, admin.spec.ts
+    pattern: sign up, force emailVerified + role=admin, sign in). Verified by
+    RENDERING, not reading: nav link reaches the page; creating a 15%/min $25
+    code shows "Created <code>."; the row reports status "live" and terms
+    "15% off over $25.00"; switching Type to fixed changes the field label from
+    PERCENT OFF to AMOUNT OFF ($); Deactivate flips the row to "off" and
+    active=false in the DB.
+  - My first check spec FAILED on my own ambiguous selector -- getByLabel
+    ("Percent off") matched both the select's option text and the input label.
+    That was my test's bug, not the app's. Fixed with getByRole("spinbutton").
+  - TWO THINGS ONLY RENDERING REVEALED:
+    1. Pre-existing codes fiveoff and smoke10 (null ends_at, created before
+       this feature) render as "now -> no end" and stay usable. That is the
+       "app stricter than schema, existing rows untouched" decision working in
+       practice, not just in the spec.
+    2. Fixed amounts render as money in the terms column ("$5.00 off over
+       $40.00"), so the cents conversion is right end to end.
+  - MINOR for the final review: the status column renders the raw lowercase
+    value ("live", "off"). Spec section 6 wrote them capitalised
+    (Live/Scheduled/Expired/Exhausted/Off). Purely presentational.
+  - Cleanup: throwaway spec deleted, created code and check admin users removed
+    from the dev DB. fiveoff/smoke10 left alone -- pre-existing, not mine.
+  - Reviewer resolved the deactivate-gating question the controller raised:
+    expired and exhausted are PERMANENT, monotonic states (timesRedeemed only
+    increments; dates do not move), so a code in either can never become usable
+    again regardless of `active`. Omitting the control there costs nothing.
+  - Reviewer also confirmed the page CALLS discountStatus rather than
+    re-deriving the condition inline, which is the entire point of Task 1.
+  - ONE OF ITS MINORS IS ALREADY CLOSED BY EVIDENCE it did not have: it flagged
+    terms()'s fixed-amount branch (formatCents) as unexercised. The controller's
+    browser check did hit it -- pre-existing code `fiveoff` rendered as
+    "$5.00 off over $40.00" in the screenshot. No follow-up needed.
+  - Remaining Minors for the final review: no unit tests for the pure helpers
+    terms()/dateRange() (consistent with this repo not unit-testing FulfillForm
+    or RefundButton either); <th> cells lack scope="col"; and the status column
+    renders raw lowercase values where spec section 6 wrote them capitalised.
+Task 5: complete (commit a51cac2)
+  - Round-trip test verified by the controller to actually CROSS THE SEAM: it
+    creates with the new writer (createDiscountCode) and reads with the
+    pre-existing reader (lookupDiscount/validateDiscount/redeemDiscount),
+    looking the code up as "RoundTrip10" to prove case normalisation works in
+    both directions, then asserts timesRedeemed moved to 1.
+  - Registering this plan flagged exactly ONE stale block:
+    discounts/actions.ts, Task 3's review-corrected parsing layer. Task 2's
+    isDuplicate had already been synced earlier on this branch. Guard 220/220.
+  - FULL VERIFICATION (controller-run, all four commands):
+    663 tests / 53 files; tsc clean; lint clean; e2e 19 passed with the payment
+    test genuinely RUN (3.9s, 1 real payment_intent.succeeded forwarded).
+
+## Final whole-branch review (2026-09-28)
+CONTROLLER-RUN, NOT DISPATCHED. The session's harness instructions forbid
+spawning subagents unless the human asks, so the "most capable model" reviewer
+the standing instruction calls for was me, reading 186df59..7102854 directly.
+Noted because it costs the independence every other review on this branch had:
+a self-review cannot catch what the author's own blind spot created. The two
+findings below are both things the previous reviewers DID look at and pass.
+- IMPORTANT 1, fixed in 060fd48: parseOptionalInt laundered an unparseable
+  maxRedemptions into null, and null means NO CAP. A posted "2.5" or "abc"
+  created an UNCAPPED code while reporting a normal "Created" to the admin.
+  This is the FIFTH instance of the same shape on this branch (four in the
+  Task 3 review) and the THIRD across the project -- coerce-instead-of-refuse
+  is this codebase's characteristic defect, not a one-off. The Task 3 fix pass
+  rewrote the value/type/date parsing into refuse-or-fail and left the helper
+  one function below it untouched, because the review's brief listed four
+  fields and nobody asked "what else parses input in this file".
+  Proven red first: expected 'error', received 'created'.
+- IMPORTANT 2, fixed in be465dd: the list ordered by desc(id) on a random v4
+  uuid -- arbitrary order, reading as newest-first, against a spec that says
+  "Sorted newest first". Eight codes inserted in order rendered
+  aaa1,bbb2,eee5,ccc3,fff6,hhh8,ddd4,ggg7: the newest sixth of eight.
+  WHY TASK 4's BROWSER CHECK MISSED IT, and this is the transferable lesson:
+  Playwright finds a row WHEREVER IT SITS. "The code I just created is
+  visible", "the row says live", "Deactivate flips it to off" all pass on a
+  scrambled list. Rendering something is not the same as rendering it in the
+  right place; assert ORDER explicitly or it is untested.
+  Re-checked by rendering, with row order asserted this time: created
+  zzcheck1..6 through the form, page returned zzcheck6..1 top-to-bottom with
+  the two pre-existing rows below them.
+  Cost a migration the plan had promised not to need (0009, created_at,
+  additive, default now()): discount_codes was the only table needing a
+  creation time that lacked one, and desc(id) had been papering over it.
+  Rows predating the column share the migration timestamp, so TIES ARE THE
+  NORMAL CASE on a real database, not an edge case -- hence the tie-break on
+  code, and a test for it.
+  Mutation-verified: reverting to desc(id) fails both new tests, restoring
+  passes, file byte-identical after.
+  The query moved page.tsx -> admin.ts. Inlined in a Server Component it was
+  not reachable by a test at all, which is the reason it shipped unverified.
+- MY OWN first browser spec failed on the race admin.spec.ts documents in a
+  comment three lines long: navigating before the session lands bounces off
+  the gate. Second time on this branch a controller's throwaway spec was the
+  broken thing rather than the app.
+- Adding created_at broke 7 tsc errors in validate.test.ts fixtures that the
+  full vitest suite could not see -- vitest does not typecheck. `npm test`
+  green is not `npx tsc --noEmit` green; this is why the plan lists four
+  verification commands and not one.
+- Minors from Tasks 1-4 reviewed and left as-is: raw lowercase status values
+  vs the spec's capitalised ones, <th> without scope="col", no unit tests for
+  terms()/dateRange(), isDuplicate's doc comment. None affect behaviour.
+- FULL VERIFICATION, post-fix, on the committed tree (all four commands):
+  667 tests / 53 files; tsc clean; lint clean; e2e 19 passed with the payment
+  test genuinely RUN (3.8s, real payment_intent.succeeded forwarded --
+  evt_3UKi7aC4O5W0d4Lo2djlcVhh). The first e2e run SKIPPED it because no
+  `stripe listen` was up; "19 passed" and "18 passed, 1 skipped" look alike at
+  a glance and the skipped one is the only test that touches money.
+- PR SCOPING, the trap the standing instruction names: `git log
+  origin/main..HEAD` showed 24 commits, not the discount work alone. Local
+  main was one commit ahead of origin/main (186df59, designs for BOTH this
+  feature and product/inventory admin) and had never been pushed. Human's
+  call: push main first so it drops out of the PR diff. The product-inventory
+  -admin plan (e19acb0, 1876 lines) still rides along and is named in the PR
+  body rather than rewritten out of history.
+
+## Independent review (2026-09-28, dispatched at the human's request)
+The human asked for a fresh reviewer before merging, which lifted the
+no-subagents constraint. Dispatched one general-purpose Opus reviewer over
+186df59..1cbe657, deliberately BLINDED to this ledger -- it was told not to
+read progress.md, because by then the file contained my own findings and
+reading them would have anchored it to my conclusions.
+IT WAS WORTH IT. Three Importants, zero Critical. Two of the three were holes
+in MY OWN review fixes, which is exactly what a self-review cannot find.
+- IMPORTANT 1, fixed in 1645942: DATE WINDOWS WERE STILL WRONG. Task 3's
+  review moved the end anchor from 00:00:00Z to 23:59:59.999Z and called the
+  Houston problem solved; I read that reasoning in the ledger and passed over
+  it. It only SHIFTED the error. Measured: "ends 2026-09-28" stored as
+  23:59:59.999Z is 6:59:59 PM in Houston -- five hours early, every time --
+  and "starts 2026-10-01" at 00:00:00Z goes live 7:00 PM on Sept 30.
+  WHY BOTH REVIEWS MISSED IT: the broken value passes every loose assertion.
+  23:59:59.999Z really is later than the start of the day, really is in the
+  future for most of the day, and really does fix the dead-on-arrival case
+  for most of the day. The existing test asserted `> Date.now()` and was
+  load-bearing (mutation-confirmed) while still permitting the bug. ONLY AN
+  EXACT-INSTANT ASSERTION CAN CATCH A CONSTANT OFFSET ERROR.
+  Fix is src/lib/time.ts, offset read from Intl per date: the offset is not a
+  constant (UTC-5 summer, UTC-6 winter) and the two ends of a DST transition
+  day differ FROM EACH OTHER, so a single-offset conversion gets one wrong
+  whichever it picks. Both transition days tested; mutating the zone back to
+  UTC fails 8 tests.
+  The display had to move with it -- a day now ends at 04:59Z the FOLLOWING
+  day, so toISOString().slice(0,10) would print the day AFTER the one the
+  admin picked. Browser-verified: stored 2026-09-29T04:59:59.999Z, rendered
+  "2026-09-28", status live.
+- IMPORTANT 2, fixed in be57f3e: MY ordering test passed for the wrong reason.
+  I inserted aaa1..hhh8 ASCENDING ALPHABETICAL, and my own tie-break is
+  desc(code) -- so desc(code) alone reproduced the expected reversal and the
+  createdAt term could be deleted with 9/9 still green. My mutation had only
+  tried reverting to desc(id), which fails because a v4 uuid is random; I
+  never tried the weaker, far likelier regression of dropping one ORDER BY
+  term. A mutation that passes is only as good as the mutation you chose.
+- IMPORTANT 3, fixed in be57f3e: startsAt was never asserted to round-trip
+  (inherited from Task 2, not introduced by me). Setting the insert to
+  startsAt: null -- every scheduled promotion goes live instantly, a money bug
+  -- left 170/170 green. "persists every field" passed startsAt in and then
+  never checked it; endsAt was only not-null.
+- ALSO fixed: discountStatus/validateDiscount agreement was guarded by a
+  COMMENT ("if you change one, change the other"), not a test. Reordering the
+  checks left 23/23 green. Now table-driven across both functions including
+  the overlap cases, where only check ORDER decides the answer.
+- Spec drift the reviewer caught that I did not: I corrected the plan's "No
+  migration" constraint and left the SPEC's identical claim standing.
+- PUSHED BACK / DECLINED, with reasons:
+  - deactivating an unknown id reports success: the Task 3 reviewer already
+    resolved this deliberately (plain UPDATE, zero rows, safe no-op) and a
+    test depends on it. Left as-is; reopening a settled call needs the human.
+  - unbounded listDiscountCodes: real convention divergence from
+    listOrdersForAdmin, but YAGNI at two codes.
+  - refusing an already-past endsAt: less reachable now that the timezone
+    fix removes the main accidental route to it.
+- PRE-EXISTING, outside this branch, for the human: probe2.tmp.mts has been
+  committed at the repo root since 58bd1f6. Leftover probe debris.
+- The reviewer did NOT run e2e and said so plainly rather than implying a
+  pass. Controller ran it: 19 passed, payment test genuinely run (6.0s).
+- FULL VERIFICATION after fixes: 690 tests / 54 files (was 667/53); tsc
+  clean; lint clean; e2e 19 passed.
+- LESSON, and it is the same one three times: a passing mutation test proves
+  only that the ONE mutation you picked is caught. Pick the weakest plausible
+  regression, not the most dramatic one.
