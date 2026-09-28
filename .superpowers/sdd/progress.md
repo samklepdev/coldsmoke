@@ -1660,3 +1660,68 @@ findings below are both things the previous reviewers DID look at and pass.
   call: push main first so it drops out of the PR diff. The product-inventory
   -admin plan (e19acb0, 1876 lines) still rides along and is named in the PR
   body rather than rewritten out of history.
+
+## Independent review (2026-09-28, dispatched at the human's request)
+The human asked for a fresh reviewer before merging, which lifted the
+no-subagents constraint. Dispatched one general-purpose Opus reviewer over
+186df59..1cbe657, deliberately BLINDED to this ledger -- it was told not to
+read progress.md, because by then the file contained my own findings and
+reading them would have anchored it to my conclusions.
+IT WAS WORTH IT. Three Importants, zero Critical. Two of the three were holes
+in MY OWN review fixes, which is exactly what a self-review cannot find.
+- IMPORTANT 1, fixed in 1645942: DATE WINDOWS WERE STILL WRONG. Task 3's
+  review moved the end anchor from 00:00:00Z to 23:59:59.999Z and called the
+  Houston problem solved; I read that reasoning in the ledger and passed over
+  it. It only SHIFTED the error. Measured: "ends 2026-09-28" stored as
+  23:59:59.999Z is 6:59:59 PM in Houston -- five hours early, every time --
+  and "starts 2026-10-01" at 00:00:00Z goes live 7:00 PM on Sept 30.
+  WHY BOTH REVIEWS MISSED IT: the broken value passes every loose assertion.
+  23:59:59.999Z really is later than the start of the day, really is in the
+  future for most of the day, and really does fix the dead-on-arrival case
+  for most of the day. The existing test asserted `> Date.now()` and was
+  load-bearing (mutation-confirmed) while still permitting the bug. ONLY AN
+  EXACT-INSTANT ASSERTION CAN CATCH A CONSTANT OFFSET ERROR.
+  Fix is src/lib/time.ts, offset read from Intl per date: the offset is not a
+  constant (UTC-5 summer, UTC-6 winter) and the two ends of a DST transition
+  day differ FROM EACH OTHER, so a single-offset conversion gets one wrong
+  whichever it picks. Both transition days tested; mutating the zone back to
+  UTC fails 8 tests.
+  The display had to move with it -- a day now ends at 04:59Z the FOLLOWING
+  day, so toISOString().slice(0,10) would print the day AFTER the one the
+  admin picked. Browser-verified: stored 2026-09-29T04:59:59.999Z, rendered
+  "2026-09-28", status live.
+- IMPORTANT 2, fixed in be57f3e: MY ordering test passed for the wrong reason.
+  I inserted aaa1..hhh8 ASCENDING ALPHABETICAL, and my own tie-break is
+  desc(code) -- so desc(code) alone reproduced the expected reversal and the
+  createdAt term could be deleted with 9/9 still green. My mutation had only
+  tried reverting to desc(id), which fails because a v4 uuid is random; I
+  never tried the weaker, far likelier regression of dropping one ORDER BY
+  term. A mutation that passes is only as good as the mutation you chose.
+- IMPORTANT 3, fixed in be57f3e: startsAt was never asserted to round-trip
+  (inherited from Task 2, not introduced by me). Setting the insert to
+  startsAt: null -- every scheduled promotion goes live instantly, a money bug
+  -- left 170/170 green. "persists every field" passed startsAt in and then
+  never checked it; endsAt was only not-null.
+- ALSO fixed: discountStatus/validateDiscount agreement was guarded by a
+  COMMENT ("if you change one, change the other"), not a test. Reordering the
+  checks left 23/23 green. Now table-driven across both functions including
+  the overlap cases, where only check ORDER decides the answer.
+- Spec drift the reviewer caught that I did not: I corrected the plan's "No
+  migration" constraint and left the SPEC's identical claim standing.
+- PUSHED BACK / DECLINED, with reasons:
+  - deactivating an unknown id reports success: the Task 3 reviewer already
+    resolved this deliberately (plain UPDATE, zero rows, safe no-op) and a
+    test depends on it. Left as-is; reopening a settled call needs the human.
+  - unbounded listDiscountCodes: real convention divergence from
+    listOrdersForAdmin, but YAGNI at two codes.
+  - refusing an already-past endsAt: less reachable now that the timezone
+    fix removes the main accidental route to it.
+- PRE-EXISTING, outside this branch, for the human: probe2.tmp.mts has been
+  committed at the repo root since 58bd1f6. Leftover probe debris.
+- The reviewer did NOT run e2e and said so plainly rather than implying a
+  pass. Controller ran it: 19 passed, payment test genuinely run (6.0s).
+- FULL VERIFICATION after fixes: 690 tests / 54 files (was 667/53); tsc
+  clean; lint clean; e2e 19 passed.
+- LESSON, and it is the same one three times: a passing mutation test proves
+  only that the ONE mutation you picked is caught. Pick the weakest plausible
+  regression, not the most dramatic one.
