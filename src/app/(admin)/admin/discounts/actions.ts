@@ -15,16 +15,50 @@ export type DiscountAdminState =
   | { status: "deactivated" }
   | { status: "error"; error: string };
 
-/**
- * A date input submits "2099-01-01" with no timezone. Parsed as UTC midnight
- * so the same form produces the same instant wherever the admin happens to be.
- */
-function parseDate(value: FormDataEntryValue | null): Date | null {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw) return null;
+type ParsedDate =
+  | { kind: "blank" }
+  | { kind: "invalid" }
+  | { kind: "valid"; date: Date };
 
-  const parsed = new Date(`${raw}T00:00:00Z`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+/**
+ * A date input submits "YYYY-MM-DD" with no timezone. Parsed as UTC so the
+ * same form produces the same instant wherever the admin happens to be.
+ *
+ * Start and end are anchored to opposite ends of that day: a start reads as
+ * "no earlier than this day" (UTC midnight), but an end reads as "through
+ * the end of this day" (23:59:59.999 UTC). Anchoring endsAt at midnight
+ * would make "ends today" already hours in the past for an admin behind
+ * UTC -- this shop is run from Houston, UTC-5/6 -- so the code would be dead
+ * on arrival while the UI implied it was valid through today.
+ *
+ * `new Date("2099-02-30T...")` does not produce Invalid Date; it silently
+ * rolls over to March 2nd. The shape is checked strictly and the
+ * constructed date's UTC year/month/day are compared back against what was
+ * submitted so a malformed date is refused rather than quietly corrected.
+ */
+function parseDate(
+  value: FormDataEntryValue | null,
+  boundary: "start" | "end",
+): ParsedDate {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return { kind: "blank" };
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return { kind: "invalid" };
+
+  const time = boundary === "start" ? "T00:00:00.000Z" : "T23:59:59.999Z";
+  const date = new Date(`${raw}${time}`);
+  if (Number.isNaN(date.getTime())) return { kind: "invalid" };
+
+  const [year, month, day] = raw.split("-").map(Number);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() + 1 !== month ||
+    date.getUTCDate() !== day
+  ) {
+    return { kind: "invalid" };
+  }
+
+  return { kind: "valid", date };
 }
 
 function parseOptionalInt(value: FormDataEntryValue | null): number | null {
@@ -41,8 +75,22 @@ export async function createDiscountAction(
 ): Promise<DiscountAdminState> {
   await requireAdminUser();
 
-  const type = formData.get("type") === "fixed" ? "fixed" : "percent";
-  const rawValue = Number(String(formData.get("value") ?? "").trim());
+  const rawType = formData.get("type");
+  if (rawType !== "percent" && rawType !== "fixed") {
+    // A Server Action is reachable by POST without the form ever rendering,
+    // so a missing or tampered type is refused rather than defaulted.
+    return { status: "error", error: "Choose a discount type." };
+  }
+  const type = rawType;
+
+  const rawValueStr = String(formData.get("value") ?? "").trim();
+  if (rawValueStr === "") {
+    // Number("") is 0 and Number.isFinite(0) is true, so blank has to be
+    // caught before the numeric check runs -- otherwise an empty value
+    // field silently creates a 0%-off or $0.00 code.
+    return { status: "error", error: "Enter an amount." };
+  }
+  const rawValue = Number(rawValueStr);
 
   if (!Number.isFinite(rawValue)) {
     return { status: "error", error: "Enter an amount." };
@@ -59,10 +107,22 @@ export async function createDiscountAction(
     return { status: "error", error: "Enter a minimum of zero or more." };
   }
 
-  const endsAt = parseDate(formData.get("endsAt"));
-  if (!endsAt) {
+  const endsAtParsed = parseDate(formData.get("endsAt"), "end");
+  if (endsAtParsed.kind === "blank") {
     return { status: "error", error: "Give the code an end date." };
   }
+  if (endsAtParsed.kind === "invalid") {
+    return { status: "error", error: "Enter a valid end date." };
+  }
+  const endsAt = endsAtParsed.date;
+
+  const startsAtParsed = parseDate(formData.get("startsAt"), "start");
+  if (startsAtParsed.kind === "invalid") {
+    return { status: "error", error: "Enter a valid start date." };
+  }
+  // Blank legitimately means "no start restriction"; garbled input does not
+  // fall through to that same meaning -- it is refused above.
+  const startsAt = startsAtParsed.kind === "valid" ? startsAtParsed.date : null;
 
   try {
     const created = await createDiscountCode({
@@ -71,7 +131,7 @@ export async function createDiscountAction(
       value,
       minSubtotalCents: Math.round(minSubtotalDollars * 100),
       maxRedemptions: parseOptionalInt(formData.get("maxRedemptions")),
-      startsAt: parseDate(formData.get("startsAt")),
+      startsAt,
       endsAt,
     });
 

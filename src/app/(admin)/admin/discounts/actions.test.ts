@@ -110,6 +110,81 @@ describe("createDiscountAction", () => {
 
     boom.mockRestore();
   });
+
+  it("refuses a blank value instead of creating a 0-value code", async () => {
+    const state = await createDiscountAction(
+      { status: "idle" },
+      form({ ...VALID_FIELDS, value: "" }),
+    );
+
+    expect(state.status).toBe("error");
+    expect(await ctx.db.select().from(discountCodes)).toHaveLength(0);
+  });
+
+  it("refuses a type that is not percent or fixed", async () => {
+    const state = await createDiscountAction(
+      { status: "idle" },
+      form({ ...VALID_FIELDS, type: "bogus" }),
+    );
+
+    expect(state.status).toBe("error");
+    expect(await ctx.db.select().from(discountCodes)).toHaveLength(0);
+  });
+
+  it("refuses a malformed endsAt that would otherwise roll over to a valid date", async () => {
+    // new Date("2099-02-30T...") does not produce Invalid Date -- it
+    // silently rolls forward to March 2nd.
+    const state = await createDiscountAction(
+      { status: "idle" },
+      form({ ...VALID_FIELDS, endsAt: "2099-02-30" }),
+    );
+
+    expect(state.status).toBe("error");
+    expect(await ctx.db.select().from(discountCodes)).toHaveLength(0);
+  });
+
+  it("treats endsAt as the end of the chosen day, not the start", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const state = await createDiscountAction(
+      { status: "idle" },
+      form({ ...VALID_FIELDS, code: "endstoday", endsAt: today }),
+    );
+
+    expect(state).toEqual({ status: "created", code: "endstoday" });
+    const [row] = await ctx.db.select().from(discountCodes);
+    expect(row.endsAt).not.toBeNull();
+    expect(row.endsAt!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("refuses a malformed startsAt rather than treating it as no restriction", async () => {
+    const state = await createDiscountAction(
+      { status: "idle" },
+      form({ ...VALID_FIELDS, startsAt: "2099-02-30" }),
+    );
+
+    expect(state.status).toBe("error");
+    expect(await ctx.db.select().from(discountCodes)).toHaveLength(0);
+  });
+
+  it("converts a non-zero minSubtotal from dollars to cents", async () => {
+    await createDiscountAction(
+      { status: "idle" },
+      form({ ...VALID_FIELDS, code: "min25", minSubtotal: "25" }),
+    );
+
+    const [row] = await ctx.db.select().from(discountCodes);
+    expect(row.minSubtotalCents).toBe(2500);
+  });
+
+  it("revalidates the discounts admin path on a successful create", async () => {
+    const { revalidatePath } = await import("next/cache");
+    vi.mocked(revalidatePath).mockClear();
+
+    await createDiscountAction({ status: "idle" }, form(VALID_FIELDS));
+
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/discounts");
+  });
 });
 
 describe("deactivateDiscountAction", () => {
@@ -132,6 +207,25 @@ describe("deactivateDiscountAction", () => {
     expect(state).toEqual({ status: "deactivated" });
     const [row] = await ctx.db.select().from(discountCodes);
     expect(row.active).toBe(false);
+  });
+
+  it("revalidates the discounts admin path on a successful deactivate", async () => {
+    const created = await createDiscountCode({
+      code: "revalme",
+      type: "percent",
+      value: 15,
+      minSubtotalCents: 0,
+      maxRedemptions: null,
+      startsAt: null,
+      endsAt: new Date("2099-01-01T00:00:00Z"),
+    });
+
+    const { revalidatePath } = await import("next/cache");
+    vi.mocked(revalidatePath).mockClear();
+
+    await deactivateDiscountAction({ status: "idle" }, form({ id: created.id }));
+
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/discounts");
   });
 });
 
