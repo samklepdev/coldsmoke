@@ -1458,7 +1458,7 @@ Task 1: complete (commit 963018e, review Approved, 0 Critical/Important)
     documentation-via-test. discountStatus has no subtotalCents parameter, so
     no signature-conforming implementation could branch on it; the type is the
     real guardrail. Harmless, but it is not the guard it reads as.
-Task 2: committed 8128812 (review in flight at time of writing)
+Task 2: complete (commit 8128812, review Approved, 0 Critical/Important)
   - createDiscountCode + deactivateDiscountCode + DiscountInputError. 7/7.
   - TWO PLAN DEFECTS FOUND BY THE IMPLEMENTER, both real:
     1. My isDuplicate never worked. postgres-js/drizzle wraps the driver error
@@ -1480,3 +1480,14 @@ Task 2: committed 8128812 (review in flight at time of writing)
     LESSON: a task that edits a file owned by an older plan's Create block must
     run the full suite, not the focused file. Three of the six restock tasks
     hit this; I left it out of this plan's Task 1 anyway.
+  - Reviewer verified two things beyond the brief: discount_codes_code_idx is
+    the table's ONLY unique constraint besides the PK, so mapping any 23505 to
+    "that code already exists" cannot misfire on an unrelated violation; and
+    the two testDb() connections (mock factory + beforeAll) point at the same
+    database, so truncate() really clears what the mocked client sees.
+  - MINORS for the final review:
+    1. No test exercises the charset branch (^[a-z0-9-]+$) -- inherited from MY
+       brief's test list, not dropped by the implementer. That validation is
+       currently unverified.
+    2. isDuplicate's doc comment does not mention it checks both the top-level
+       and .cause-wrapped forms; only the inline comment does.
