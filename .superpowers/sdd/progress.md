@@ -1491,3 +1491,17 @@ Task 2: complete (commit 8128812, review Approved, 0 Critical/Important)
        currently unverified.
     2. isDuplicate's doc comment does not mention it checks both the top-level
        and .cause-wrapped forms; only the inline comment does.
+Task 3: committed 7e77d41 (review in flight at time of writing)
+  - createDiscountAction + deactivateDiscountAction + DiscountAdminState.
+    7/7 focused, FULL SUITE 645 tests / 52 files, tsc + lint clean.
+  - Implementer ran the admin-gate mutation: deleting requireAdminUser() from
+    createDiscountAction fails exactly that gate test (6/7), restoring gives
+    7/7. Used a module-namespace spy for the propagation test and said so.
+  - CONTROLLER RE-RAN A DIFFERENT MUTATION, on the piece most likely to pass
+    for the wrong reason: replacing the `instanceof DiscountInputError` +
+    rethrow with a blanket catch-all fails "rejects rather than reporting a
+    friendly error when something unexpected fails" (1 failed / 6 passed).
+    So the discrimination is pinned, not incidental. File restored, diff empty.
+  - Unit conversion present and correct: fixed amounts go dollars -> cents via
+    Math.round(value * 100), percent passes through. Getting that backwards
+    would make every fixed-amount promotion off by 100x.
