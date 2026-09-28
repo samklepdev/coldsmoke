@@ -1296,7 +1296,7 @@ Create `src/lib/discounts/validate.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { validateDiscount, discountFailureMessage } from "./validate";
+import { validateDiscount, discountFailureMessage, discountStatus } from "./validate";
 import type { DiscountCode } from "@/lib/db/schema";
 
 const NOW = new Date("2026-06-15T12:00:00Z");
@@ -1431,6 +1431,64 @@ describe("discountFailureMessage", () => {
     );
   });
 });
+
+describe("discountStatus", () => {
+  const base = {
+    id: "00000000-0000-0000-0000-000000000001",
+    code: "spring",
+    type: "percent" as const,
+    value: 15,
+    minSubtotalCents: 0,
+    maxRedemptions: null as number | null,
+    timesRedeemed: 0,
+    startsAt: null as Date | null,
+    endsAt: null as Date | null,
+    active: true,
+  };
+
+  const now = new Date("2026-06-15T12:00:00Z");
+
+  it("is live when nothing stands in the way", () => {
+    expect(discountStatus(base, now)).toBe("live");
+  });
+
+  it("is off when deactivated", () => {
+    expect(discountStatus({ ...base, active: false }, now)).toBe("off");
+  });
+
+  it("is scheduled before its start date", () => {
+    expect(
+      discountStatus({ ...base, startsAt: new Date("2026-07-01T00:00:00Z") }, now),
+    ).toBe("scheduled");
+  });
+
+  it("is expired after its end date", () => {
+    expect(
+      discountStatus({ ...base, endsAt: new Date("2026-06-01T00:00:00Z") }, now),
+    ).toBe("expired");
+  });
+
+  it("is exhausted once the cap is reached", () => {
+    expect(
+      discountStatus({ ...base, maxRedemptions: 5, timesRedeemed: 5 }, now),
+    ).toBe("exhausted");
+  });
+
+  it("reports expired rather than live for a code still flagged active", () => {
+    // The whole reason this derivation exists: `active` is not the same
+    // question as "can a customer use this right now".
+    const code = { ...base, active: true, endsAt: new Date("2026-01-01T00:00:00Z") };
+
+    expect(code.active).toBe(true);
+    expect(discountStatus(code, now)).toBe("expired");
+  });
+
+  it("ignores the minimum subtotal, which is a property of a cart", () => {
+    // validateDiscount can fail with below_minimum; that says nothing about
+    // whether the code itself is usable, so it must not appear here.
+    expect(discountStatus({ ...base, minSubtotalCents: 50_000 }, now)).toBe("live");
+  });
+});
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1510,6 +1568,37 @@ export function discountFailureMessage(
         ? `That code needs an order of ${formatCents(code.minSubtotalCents)} or more.`
         : "Your order is below the minimum for that code.";
   }
+}
+
+export type DiscountStatus =
+  | "live"
+  | "scheduled"
+  | "expired"
+  | "exhausted"
+  | "off";
+
+/**
+ * Whether a code is usable right now, for the admin list.
+ *
+ * Deliberately mirrors validateDiscount's checks in the same order, so the
+ * list cannot tell an admin a code is live while the cart tells a customer it
+ * is not. If you change one, change the other.
+ *
+ * `below_minimum` has no counterpart here on purpose: it describes a
+ * particular cart, not the code. A code requiring $50 is not broken, it is
+ * waiting for a big enough basket.
+ */
+export function discountStatus(
+  code: DiscountCode,
+  now: Date = new Date(),
+): DiscountStatus {
+  if (!code.active) return "off";
+  if (code.startsAt && code.startsAt > now) return "scheduled";
+  if (code.endsAt && code.endsAt < now) return "expired";
+  if (code.maxRedemptions !== null && code.timesRedeemed >= code.maxRedemptions) {
+    return "exhausted";
+  }
+  return "live";
 }
 ```
 

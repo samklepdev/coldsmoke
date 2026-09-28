@@ -148,10 +148,17 @@ export function discountStatus(
 Run: `npx vitest run src/lib/discounts/validate.test.ts`
 Expected: PASS, including every pre-existing test in the file.
 
-- [ ] **Step 5: Verify types and lint**
+- [ ] **Step 5: Verify types, lint, and the FULL suite**
 
-Run: `npx tsc --noEmit && npm run lint`
-Expected: both clean.
+Run: `npx tsc --noEmit && npm run lint && npx vitest run`
+Expected: all clean.
+
+The full suite matters here, not just the focused file: `validate.ts` and
+`validate.test.ts` are byte-for-byte `Create` blocks in
+`docs/superpowers/plans/2026-09-19-coldsmoke-storefront-checkout.md`, and
+`src/test/plan-drift.test.ts` compares them. Editing either turns the guard red
+until that plan's blocks are re-synced. Sync them in a separate `docs:` commit
+and change nothing else in that document.
 
 - [ ] **Step 6: Commit**
 
@@ -364,11 +371,20 @@ export type CreateDiscountInput = {
 
 /** Postgres unique-violation. */
 function isDuplicate(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  // postgres-js wraps the driver error as DrizzleQueryError, with the actual
+  // PostgresError (and its `code`) on `.cause` rather than the error itself.
+  if ("code" in error && (error as { code: unknown }).code === "23505") {
+    return true;
+  }
+  const cause = "cause" in error ? (error as { cause: unknown }).cause : undefined;
   return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code: unknown }).code === "23505"
+    typeof cause === "object" &&
+    cause !== null &&
+    "code" in cause &&
+    (cause as { code: unknown }).code === "23505"
   );
 }
 
@@ -456,7 +472,7 @@ export async function deactivateDiscountCode(id: string): Promise<void> {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx vitest run src/lib/discounts/admin.test.ts`
-Expected: PASS, 8 tests.
+Expected: PASS, 7 tests.
 
 - [ ] **Step 5: Verify types and lint**
 
