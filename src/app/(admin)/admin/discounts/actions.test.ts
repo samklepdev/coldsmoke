@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { testDb } from "@/test/db";
 import { discountCodes } from "@/lib/db/schema";
+import { discountStatus } from "@/lib/discounts";
 
 let ctx: Awaited<ReturnType<typeof testDb>>;
 
@@ -155,6 +156,56 @@ describe("createDiscountAction", () => {
     const [row] = await ctx.db.select().from(discountCodes);
     expect(row.endsAt).not.toBeNull();
     expect(row.endsAt!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("ends a code at midnight in Houston, not midnight UTC", async () => {
+    // The exact instant, because every looser assertion passed while the
+    // code still died at 6:59pm local: 23:59:59.999Z is genuinely "later
+    // than the start of the day" and genuinely "in the future".
+    await createDiscountAction(
+      { status: "idle" },
+      form({ ...VALID_FIELDS, code: "tzcheck", endsAt: "2026-09-28" }),
+    );
+
+    const [row] = await ctx.db.select().from(discountCodes);
+    expect(row.endsAt!.toISOString()).toBe("2026-09-29T04:59:59.999Z");
+  });
+
+  it("starts a code at midnight in Houston, not midnight UTC", async () => {
+    // The mirror bug: a UTC start would take an embargoed code live at 7pm
+    // the previous evening.
+    await createDiscountAction(
+      { status: "idle" },
+      form({
+        ...VALID_FIELDS,
+        code: "tzstart",
+        startsAt: "2026-10-01",
+        endsAt: "2026-10-31",
+      }),
+    );
+
+    const [row] = await ctx.db.select().from(discountCodes);
+    expect(row.startsAt!.toISOString()).toBe("2026-10-01T05:00:00.000Z");
+  });
+
+  it("persists a future startsAt, so a scheduled code is actually scheduled", async () => {
+    // Dropping startsAt on the way to the database would take every embargoed
+    // promotion live the moment it was created, and nothing else in this
+    // suite would notice.
+    const state = await createDiscountAction(
+      { status: "idle" },
+      form({
+        ...VALID_FIELDS,
+        code: "future1",
+        startsAt: "2099-06-01",
+        endsAt: "2099-07-01",
+      }),
+    );
+
+    expect(state.status).toBe("created");
+    const [row] = await ctx.db.select().from(discountCodes);
+    expect(row.startsAt).not.toBeNull();
+    expect(discountStatus(row)).toBe("scheduled");
   });
 
   it("refuses a malformed startsAt rather than treating it as no restriction", async () => {

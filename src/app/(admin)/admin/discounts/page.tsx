@@ -2,6 +2,7 @@ import type { DiscountCode } from "@/lib/db/schema";
 import { discountStatus } from "@/lib/discounts";
 import { listDiscountCodes } from "@/lib/discounts/admin";
 import { formatCents } from "@/lib/money";
+import { zonedDateString } from "@/lib/time";
 import { CreateDiscountForm, DeactivateButton } from "./DiscountForms";
 import styles from "./discounts.module.css";
 
@@ -19,8 +20,11 @@ function terms(code: DiscountCode) {
 }
 
 function dateRange(code: DiscountCode) {
-  const from = code.startsAt?.toISOString().slice(0, 10) ?? "now";
-  const to = code.endsAt?.toISOString().slice(0, 10) ?? "no end";
+  // Rendered in the shop's timezone, not UTC. A day now ends at 04:59Z the
+  // FOLLOWING day, so slicing toISOString() would print the day after the one
+  // the admin picked -- the list would disagree with the form that made it.
+  const from = code.startsAt ? zonedDateString(code.startsAt) : "now";
+  const to = code.endsAt ? zonedDateString(code.endsAt) : "no end";
   return `${from} → ${to}`;
 }
 

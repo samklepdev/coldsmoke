@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { requireAdminUser } from "@/lib/auth/session";
+import { zonedDayBoundary } from "@/lib/time";
 import {
   createDiscountCode,
   deactivateDiscountCode,
@@ -21,20 +22,19 @@ type ParsedDate =
   | { kind: "valid"; date: Date };
 
 /**
- * A date input submits "YYYY-MM-DD" with no timezone. Parsed as UTC so the
- * same form produces the same instant wherever the admin happens to be.
+ * A date input submits "YYYY-MM-DD" with no timezone, and the admin typing it
+ * means a day in the shop's timezone. Start and end are anchored to opposite
+ * ends of that local day, so "ends today" stays valid until midnight in
+ * Houston rather than expiring at 6:59pm.
  *
- * Start and end are anchored to opposite ends of that day: a start reads as
- * "no earlier than this day" (UTC midnight), but an end reads as "through
- * the end of this day" (23:59:59.999 UTC). Anchoring endsAt at midnight
- * would make "ends today" already hours in the past for an admin behind
- * UTC -- this shop is run from Houston, UTC-5/6 -- so the code would be dead
- * on arrival while the UI implied it was valid through today.
+ * Anchoring these in UTC is the trap, and it is not obvious: an end at
+ * 23:59:59.999Z is still "later than the start of the day" and still "in the
+ * future" for most of the day, so it passes every loose check while ending
+ * every promotion five hours early. See src/lib/time.ts.
  *
- * `new Date("2099-02-30T...")` does not produce Invalid Date; it silently
- * rolls over to March 2nd. The shape is checked strictly and the
- * constructed date's UTC year/month/day are compared back against what was
- * submitted so a malformed date is refused rather than quietly corrected.
+ * zonedDayBoundary also refuses a date that is not real: `new Date(
+ * "2099-02-30")` does not produce Invalid Date, it rolls forward to March 2,
+ * so a malformed date would otherwise become a different valid one.
  */
 function parseDate(
   value: FormDataEntryValue | null,
@@ -43,22 +43,11 @@ function parseDate(
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw) return { kind: "blank" };
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return { kind: "invalid" };
-
-  const time = boundary === "start" ? "T00:00:00.000Z" : "T23:59:59.999Z";
-  const date = new Date(`${raw}${time}`);
-  if (Number.isNaN(date.getTime())) return { kind: "invalid" };
-
-  const [year, month, day] = raw.split("-").map(Number);
-  if (
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() + 1 !== month ||
-    date.getUTCDate() !== day
-  ) {
+  try {
+    return { kind: "valid", date: zonedDayBoundary(raw, boundary) };
+  } catch {
     return { kind: "invalid" };
   }
-
-  return { kind: "valid", date };
 }
 
 type ParsedCount =
