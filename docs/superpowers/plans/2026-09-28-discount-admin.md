@@ -29,7 +29,7 @@
 
 **Files:**
 - Modify: `src/lib/discounts/validate.ts`
-- Test: `src/lib/discounts/validate.test.ts` (**append** if it exists; create if not — check first with `ls src/lib/discounts/`)
+- Test: `src/lib/discounts/validate.test.ts` (**append** — this file exists with 16 tests across `describe("validateDiscount")` and `describe("discountFailureMessage")`; keep every one byte-for-byte. After your append it has 23.)
 
 **Interfaces:**
 - Consumes: nothing.
@@ -99,14 +99,7 @@ describe("discountStatus", () => {
 });
 ```
 
-If `src/lib/discounts/validate.test.ts` does not exist, create it with this content preceded by:
-
-```ts
-import { describe, it, expect } from "vitest";
-import { discountStatus } from "./validate";
-```
-
-Otherwise add `discountStatus` to the file's existing import from `./validate` and keep every existing test byte-for-byte.
+Add `discountStatus` to the file's existing import from `./validate`. Keep every existing test byte-for-byte: the file has 16 and must have 23 when you are done. If it ends up with only your new `describe`, you have overwritten it — recover with `git show HEAD:src/lib/discounts/validate.test.ts`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -906,7 +899,7 @@ function terms(code: typeof discountCodes.$inferSelect) {
     : off;
 }
 
-function window(code: typeof discountCodes.$inferSelect) {
+function dateRange(code: typeof discountCodes.$inferSelect) {
   const from = code.startsAt?.toISOString().slice(0, 10) ?? "now";
   const to = code.endsAt?.toISOString().slice(0, 10) ?? "no end";
   return `${from} → ${to}`;
@@ -953,7 +946,7 @@ export default async function AdminDiscountsPage() {
                   <td className={styles.right}>
                     {code.timesRedeemed} / {code.maxRedemptions ?? "∞"}
                   </td>
-                  <td>{window(code)}</td>
+                  <td>{dateRange(code)}</td>
                   <td>
                     {(status === "live" || status === "scheduled") && (
                       <DeactivateButton id={code.id} code={code.code} />
