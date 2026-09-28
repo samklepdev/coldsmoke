@@ -51,3 +51,8 @@ next-env.d.ts
 
 # Local working notes, deliberately untracked. See TODO.md.
 TODO.md
+
+# One-off probe scripts. probe2.tmp.mts was committed by accident and
+# sat at the repo root for eight days.
+*.tmp.mts
+*.tmp.ts
